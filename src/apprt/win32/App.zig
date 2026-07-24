@@ -329,7 +329,7 @@ pub fn init(
 /// Whether COM invoked our LocalServer32 command (it appends
 /// `-Embedding`). Matches WT's cold-start detection; see the use in init.
 fn launchedForEmbedding(alloc: std.mem.Allocator) bool {
-    var it = std.process.argsWithAllocator(alloc) catch return false;
+    var it = std.process.Args.Iterator.initAllocator(global.args(), alloc) catch return false;
     defer it.deinit();
     _ = it.next(); // skip argv[0]
     while (it.next()) |arg| {
