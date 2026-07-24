@@ -325,7 +325,18 @@ fn initPresenter(surface: *apprt.Surface) bool {
         @intCast(@max(1, client.right - client.left)),
         @intCast(@max(1, client.bottom - client.top)),
     ) catch |err| {
-        log.info("flip-model unavailable, using SwapBuffers err={}", .{err});
+        // With windows-flip-model on, the host window was created with
+        // WS_EX_NOREDIRECTIONBITMAP (creation-only): SwapBuffers has no
+        // redirection surface to present into, so this fallback shows a
+        // blank window. The startup probe exercises the full presenter
+        // pipeline to make this unreachable in practice; if it fires
+        // anyway, say so loudly rather than failing silently.
+        log.err(
+            "flip-model presenter failed at runtime err={}; the SwapBuffers " ++
+                "fallback cannot display into a WS_EX_NOREDIRECTIONBITMAP host — " ++
+                "if this window is blank, unset windows-flip-model",
+            .{err},
+        );
         return false;
     };
 

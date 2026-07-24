@@ -1389,9 +1389,30 @@ fn probeFlipCapable(hinstance: winapi.HINSTANCE) bool {
     if (winapi.wglMakeCurrent(hdc, ctx) == 0) return false;
     defer _ = winapi.wglMakeCurrent(null, null);
 
+    // Cheap fast-fail: without the interop extension nothing below can
+    // work.
     const proc = winapi.wglGetProcAddress("wglDXOpenDeviceNV") orelse return false;
     const v = @intFromPtr(proc);
-    return v > 3 and v != @as(usize, @bitCast(@as(isize, -1)));
+    if (v <= 3 or v == @as(usize, @bitCast(@as(isize, -1)))) return false;
+
+    // Exercise the FULL presenter pipeline once — D3D11 device, DXGI
+    // composition swapchain, frame-latency waitable, DComp device/
+    // target/visual, and the interop device open. The extension
+    // resolving is NOT sufficient: on remote sessions, older drivers,
+    // or VMs any of those creations can fail, and flip-enabled hosts
+    // are created with WS_EX_NOREDIRECTIONBITMAP — a style under which
+    // the SwapBuffers fallback presents into a redirection surface that
+    // doesn't exist, i.e. a permanently blank window. Probing the whole
+    // pipeline here means flip_capable=false on such machines and the
+    // hosts keep a working SwapBuffers path. (Residual risk: the GL
+    // renderbuffer registration happens per-surface at renderer init
+    // and is not probed; its failure after all of this is rare.)
+    var presenter = Surface.dxgi.Presenter.init(hwnd, 1, 1) catch |err| {
+        log.info("flip probe: presenter pipeline unavailable err={}", .{err});
+        return false;
+    };
+    presenter.deinit();
+    return true;
 }
 
 /// Show a desktop notification as a tray balloon tip, which Windows
