@@ -126,6 +126,14 @@ pub fn init(
     window: *Window,
     spawn_opts: Window.SpawnOpts,
 ) !void {
+    // Own any default-terminal handoff until it is stored in `self`
+    // below. The failure points before that — host window, DC, pixel
+    // format, GL context — would otherwise strand the handed-off pipes
+    // and HPCON (nothing else holds them once we're called), leaving
+    // conhost's session hung on a terminal that will never read.
+    var handoff_owned = spawn_opts.handoff;
+    errdefer if (handoff_owned) |h| defterm.closeHandoff(h);
+
     // The GL host child fills the client area below the title strip.
     // It is created hidden; activateTab shows the active one.
     var client: winapi.RECT = undefined;
@@ -201,7 +209,15 @@ pub fn init(
         // Stash any handoff so core_surface.init's takeHandoff hook
         // (below) can pull it into termio (the adopted HPCON moves into the
         // pty, which keeps conhost's ConPTY alive and releases it on close).
-        .pending_handoff = spawn_opts.handoff,
+        .pending_handoff = handoff_owned,
+    };
+    // Ownership handed to self: from here a failure releases the handoff
+    // through pending_handoff (null once takeHandoff consumed it into
+    // termio, whose pty then owns the handles).
+    handoff_owned = null;
+    errdefer if (self.pending_handoff) |h| {
+        defterm.closeHandoff(h);
+        self.pending_handoff = null;
     };
 
     // The renderer finds us from the host window (its only handle on
