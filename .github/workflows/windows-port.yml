@@ -42,3 +42,9 @@ jobs:
 
       - name: Unit tests
         run: zig build -Dapp-runtime=none test
+
+      # The win32-runtime suite additionally compiles+runs tests in the
+      # win32 apprt code paths (Window/App/defterm/etc.) that the none
+      # runtime never builds — where most fork defects live.
+      - name: Unit tests (apprt=win32)
+        run: zig build -Dapp-runtime=win32 test
