@@ -69,6 +69,7 @@ bousii
 brentschroeter
 brianc442
 c0x0o
+carldaws
 cespare
 charliie-dev
 chernetskyi
@@ -259,6 +260,7 @@ ruoyouz
 sahilkmishra
 samasaur1
 sandydoo
+sanjj1
 -schickling-assistant NHITL
 secrus
 seruman
