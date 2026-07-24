@@ -2533,14 +2533,14 @@ fn testDrainPipe(
     var buf: [4096]u8 = undefined;
     while (!stop.load(.acquire)) {
         var avail: windows.DWORD = 0;
-        if (windows.exp.kernel32.PeekNamedPipe(out, null, 0, null, &avail, null) == 0) return;
+        if (windows.exp.kernel32.PeekNamedPipe(out, null, 0, null, &avail, null) == windows.FALSE) return;
         if (avail == 0) {
-            std.Thread.sleep(5 * std.time.ns_per_ms);
+            std.Io.sleep(global.io(), .fromMilliseconds(5), .awake) catch {};
             continue;
         }
 
         var n: windows.DWORD = 0;
-        if (windows.kernel32.ReadFile(out, &buf, @min(avail, buf.len), &n, null) == 0) return;
+        if (windows.exp.kernel32.ReadFile(out, &buf, @min(avail, buf.len), &n, null) == windows.FALSE) return;
         _ = total.fetchAdd(n, .monotonic);
     }
 }
@@ -2667,11 +2667,11 @@ test "exec windows: conpty shell exit via xev stream write and process watcher" 
     // before conhost has flushed the first paint to our pipe, so give the
     // drainer a bounded window to observe it rather than asserting
     // immediately.
-    var drain_timer = try std.time.Timer.start();
+    const drain_start = std.Io.Timestamp.now(global.io(), .awake);
     while (drain_total.load(.monotonic) == 0 and
-        drain_timer.read() < 10 * std.time.ns_per_s)
+        drain_start.durationTo(std.Io.Timestamp.now(global.io(), .awake)).toNanoseconds() < 10 * std.time.ns_per_s)
     {
-        std.Thread.sleep(5 * std.time.ns_per_ms);
+        std.Io.sleep(global.io(), .fromMilliseconds(5), .awake) catch {};
     }
     try testing.expect(drain_total.load(.monotonic) > 0);
 }

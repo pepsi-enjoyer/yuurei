@@ -1058,9 +1058,9 @@ test "Command: windows pseudo console round-trip" {
     // hang forever. Poll with a deadline instead.
     var output: [64 * 1024]u8 = undefined;
     var output_len: usize = 0;
-    var timer = try std.time.Timer.start();
+    const deadline_start = std.Io.Timestamp.now(global.io(), .awake);
     while (mem.indexOf(u8, output[0..output_len], marker) == null) {
-        if (timer.read() > 30 * std.time.ns_per_s) break;
+        if (deadline_start.durationTo(std.Io.Timestamp.now(global.io(), .awake)).toNanoseconds() > 30 * std.time.ns_per_s) break;
 
         var avail: windows.DWORD = 0;
         if (windows.exp.kernel32.PeekNamedPipe(
@@ -1070,10 +1070,10 @@ test "Command: windows pseudo console round-trip" {
             null,
             &avail,
             null,
-        ) == 0) return windows.unexpectedError(windows.kernel32.GetLastError());
+        ) == windows.FALSE) return windows.unexpectedError(windows.GetLastError());
 
         if (avail == 0) {
-            std.Thread.sleep(10 * std.time.ns_per_ms);
+            std.Io.sleep(global.io(), .fromMilliseconds(10), .awake) catch {};
             continue;
         }
 
@@ -1084,13 +1084,13 @@ test "Command: windows pseudo console round-trip" {
         try testing.expect(to_read > 0); // marker must fit in our buffer
 
         var n: windows.DWORD = 0;
-        if (windows.kernel32.ReadFile(
+        if (windows.exp.kernel32.ReadFile(
             pty.out_pipe,
             output[output_len..].ptr,
             to_read,
             &n,
             null,
-        ) == 0) return windows.unexpectedError(windows.kernel32.GetLastError());
+        ) == windows.FALSE) return windows.unexpectedError(windows.GetLastError());
         output_len += n;
     }
     try testing.expect(mem.indexOf(u8, output[0..output_len], marker) != null);
