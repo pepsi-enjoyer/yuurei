@@ -3217,24 +3217,27 @@ pub fn wndProc(
         winapi.WM_SYSKEYDOWN,
         winapi.WM_SYSKEYUP,
         => {
-            // While renaming a tab, the window captures Enter/Escape.
-            if (self.rename_active and msg == winapi.WM_KEYDOWN) {
-                switch (@as(u8, @truncate(wparam))) {
-                    winapi.VK_RETURN => {
-                        self.commitRename(true);
-                        return 0;
-                    },
-                    winapi.VK_ESCAPE => {
-                        self.commitRename(false);
-                        return 0;
-                    },
-                    'V' => {
-                        if (winapi.GetKeyState(winapi.VK_CONTROL) < 0)
-                            self.renamePaste();
-                        return 0;
-                    },
-                    else => return 0,
+            // While renaming a tab, the window captures the keyboard:
+            // Enter/Escape/paste act on the rename, and nothing —
+            // including releases and sys keys — reaches the terminal.
+            // Presses are consumed here, so letting a WM_KEYUP fall
+            // through to keyEvent would deliver an orphan release to
+            // apps using kitty release reporting. System chords keep
+            // their default handling (Alt+F4, Alt+Space).
+            if (self.rename_active) {
+                if (msg == winapi.WM_KEYDOWN) {
+                    switch (@as(u8, @truncate(wparam))) {
+                        winapi.VK_RETURN => self.commitRename(true),
+                        winapi.VK_ESCAPE => self.commitRename(false),
+                        'V' => if (winapi.GetKeyState(winapi.VK_CONTROL) < 0)
+                            self.renamePaste(),
+                        else => {},
+                    }
+                    return 0;
                 }
+                if (msg == winapi.WM_SYSKEYDOWN or msg == winapi.WM_SYSKEYUP)
+                    return winapi.DefWindowProcW(hwnd, msg, wparam, lparam);
+                return 0;
             }
             self.keyEvent(msg, wparam, lparam);
             if (msg == winapi.WM_SYSKEYDOWN or msg == winapi.WM_SYSKEYUP)
