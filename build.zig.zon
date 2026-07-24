@@ -17,15 +17,13 @@
 
         // Zig libs
         .libxev = .{
-            // mitchellh/libxev 9ce8e8e (Zig 0.16). NOTE: the fork previously
-            // vendored libxev 34fa508 with a Windows fix (AsyncIOCP
-            // heap-allocates its notify state so by-value copies share it;
-            // upstream's inline fields fork the state on copy, silently
-            // dropping notify() through a pre-wait() copy of the renderer
-            // wakeup — the keystroke-latency saga). Reverted to the upstream
-            // 0.16 dep to land the Zig-0.16 upgrade; RE-BENCHMARK typing
-            // latency (bench/) and re-apply the fix if it regressed. The old
-            // vendored tree is kept under vendor/libxev for reference.
+            // mitchellh/libxev 9ce8e8e (Zig 0.16). The fork used to vendor
+            // libxev 34fa508 with a Windows AsyncIOCP fix for a renderer
+            // wakeup-loss bug (the keystroke-latency saga). On the 0.16
+            // upgrade that fix proved obsolete — upstream's 0.16 AsyncIOCP
+            // no longer loses wakeups, and bench/ measured ~17ms (parity,
+            // no regression) — so the vendored tree was removed and we use
+            // the upstream dep. See the zig-016-upgrade / latency notes.
             .url = "https://deps.files.ghostty.org/libxev-9ce8e8e6ff89e583258a7f8e7adeeeaeae8611bf.tar.gz",
             .hash = "libxev-0.0.0-86vtcwIRFADbH4hk-EjROXxlrKIRPQdA41XiTSytYO-F",
             .lazy = true,
