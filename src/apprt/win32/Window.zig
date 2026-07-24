@@ -3299,8 +3299,16 @@ pub fn wndProc(
 
             // Honor the system per-notch scroll amount instead of a
             // hardcoded 3 (default is 3, so feel is unchanged unless the
-            // user customized it).
-            const units = wheelScrollUnits(msg == winapi.WM_MOUSEHWHEEL);
+            // user customized it). A "scroll one page" system setting
+            // (WHEEL_PAGESCROLL) means the viewport, not a fixed count.
+            const horizontal = msg == winapi.WM_MOUSEHWHEEL;
+            const units = wheelScrollUnits(horizontal) orelse page: {
+                const grid = surface.core_surface.size.grid();
+                break :page @as(f64, @floatFromInt(@max(
+                    1,
+                    if (horizontal) grid.columns else grid.rows,
+                )));
+            };
             if (msg == winapi.WM_MOUSEHWHEEL) {
                 surface.core_surface.scrollCallback(ticks * units, 0, .{}) catch |err| {
                     log.err("error in scroll callback err={}", .{err});
@@ -3918,15 +3926,16 @@ fn charEvent(self: *Window, unit: u16) void {
 /// The system "lines/characters per wheel notch" setting, as a scroll
 /// multiplier applied to wheel ticks. Defaults to 3 (the Windows
 /// default), so behavior is unchanged unless the user customized it.
-/// A page-scroll setting falls back to a larger fixed step.
-fn wheelScrollUnits(horizontal: bool) f64 {
+/// Null means the system asks for page scrolling (WHEEL_PAGESCROLL);
+/// the caller substitutes the surface's actual viewport size.
+fn wheelScrollUnits(horizontal: bool) ?f64 {
     const param: winapi.UINT = if (horizontal)
         winapi.SPI_GETWHEELSCROLLCHARS
     else
         winapi.SPI_GETWHEELSCROLLLINES;
     var value: winapi.UINT = 3;
     _ = winapi.SystemParametersInfoW(param, 0, &value, 0);
-    if (value == winapi.WHEEL_PAGESCROLL) return 20;
+    if (value == winapi.WHEEL_PAGESCROLL) return null;
     return @floatFromInt(value);
 }
 

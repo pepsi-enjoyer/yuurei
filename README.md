@@ -132,7 +132,7 @@ bursts. Delete them and yuurei falls back to the in-box ConPTY.
 ## Building
 
 Requires [Zig](https://ziglang.org/) at the version pinned in
-[`build.zig.zon`](build.zig.zon) (currently **0.15.2**). No Visual Studio
+[`build.zig.zon`](build.zig.zon) (currently **0.16.0**). No Visual Studio
 needed — Zig's toolchain links everything.
 
 ```powershell
