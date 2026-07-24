@@ -344,12 +344,6 @@ const WindowsPty = struct {
     /// be closed by us. False for a normal (self-created) pty.
     handoff: bool = false,
 
-    /// Handoff only: reserved for the resize follow-up (a duplicate of
-    /// conhost's signal pipe). Always null today — see setSize for why
-    /// resize-reflow is unsupported. Closed on deinit if ever set. Null
-    /// for a normal pty.
-    signal: ?windows.HANDLE = null,
-
     pub const OpenError = error{Unexpected};
 
     /// Open a new PTY with the given initial size.
@@ -469,7 +463,6 @@ const WindowsPty = struct {
         our_read: windows.HANDLE,
         our_write: windows.HANDLE,
         hpc: windows.exp.HPCON,
-        signal: ?windows.HANDLE,
         size: winsize,
     ) Pty {
         return .{
@@ -478,11 +471,10 @@ const WindowsPty = struct {
             // conhost owns its ConPTY pipe ends; we never received them.
             .out_pipe_pty = windows.INVALID_HANDLE_VALUE,
             .in_pipe_pty = windows.INVALID_HANDLE_VALUE,
-            // A real adopted HPCON, used for teardown (resize-reflow is
-            // not yet supported for a handoff; see setSize).
+            // A real adopted HPCON we drive for both resize and teardown
+            // (it owns the duplicated server/reference/signal handles).
             .pseudo_console = hpc,
             .handoff = true,
-            .signal = signal,
             .size = size,
         };
     }
@@ -495,7 +487,6 @@ const WindowsPty = struct {
         if (self.handoff) {
             _ = windows.CloseHandle(self.in_pipe);
             _ = windows.CloseHandle(self.out_pipe);
-            if (self.signal) |sig| _ = windows.CloseHandle(sig);
             windows.conpty.closePseudoConsole(self.pseudo_console);
             self.* = undefined;
             return;
@@ -520,20 +511,32 @@ const WindowsPty = struct {
 
     /// Set the size of the pty.
     pub fn setSize(self: *Pty, size: winsize) SetSizeError!void {
-        // Handoff pty: resize-reflow is unsupported. ResizePseudoConsole
-        // AND ConptyReparentPseudoConsole both reject a *packed* HPCON with
-        // E_HANDLE, and a signal-pipe-write workaround desynced the ConPTY.
-        // Accept the size without propagating it (the ConPTY keeps
-        // conhost's initial size). Tracked follow-up; see defterm.zig.
-        if (self.handoff) {
-            self.size = size;
-            return;
-        }
-
         const result = windows.conpty.resizePseudoConsole(
             self.pseudo_console,
             .{ .X = @intCast(size.ws_col), .Y = @intCast(size.ws_row) },
         );
+
+        // Handoff pty: the packed HPCON now holds our own duplicates of
+        // conhost's signal/reference/server (defterm.zig), so resize should
+        // reach the ConPTY. Earlier failures (E_HANDLE) came from the HPCON
+        // keeping the raw [in] handles the COM stub had already freed. If a
+        // resize still fails here, keep the surface alive — accept the size
+        // without erroring the IO thread — and log for follow-up.
+        if (self.handoff) {
+            if (result != windows.S_OK) {
+                std.log.scoped(.pty).warn(
+                    "defterm: handoff ResizePseudoConsole failed hr={x} cols={d} rows={d}",
+                    .{ @as(u32, @bitCast(result)), size.ws_col, size.ws_row },
+                );
+            } else {
+                std.log.scoped(.pty).debug(
+                    "defterm: handoff resize cols={d} rows={d}",
+                    .{ size.ws_col, size.ws_row },
+                );
+            }
+            self.size = size;
+            return;
+        }
 
         if (result != windows.S_OK) return error.ResizeFailed;
         self.size = size;

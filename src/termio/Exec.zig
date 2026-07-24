@@ -589,16 +589,16 @@ pub const ThreadData = struct {
 
 /// A default-terminal handoff (win32 only): conhost handed us a live
 /// ConPTY. When set on the Exec config, `start` adopts these instead of
-/// opening a pty and spawning a command. The pipes, the adopted HPCON
-/// (`hpc`, from ConptyPackPseudoConsole), and `signal` are consumed by
-/// the pty (openHandoff) and released on pty deinit. `client` is
-/// conhost's short-lived bootstrap process handle — useless for exit
-/// detection; see the ownership note in `start`'s handoff branch.
+/// opening a pty and spawning a command. The pipes and the adopted HPCON
+/// (`hpc`, from ConptyPackPseudoConsole — it owns duplicates of conhost's
+/// server/reference/signal handles) are consumed by the pty (openHandoff)
+/// and released on pty deinit. `client` is conhost's short-lived bootstrap
+/// process handle — useless for exit detection; see the ownership note in
+/// `start`'s handoff branch.
 pub const HandoffHandles = struct {
     our_read: windows.HANDLE,
     our_write: windows.HANDLE,
     hpc: windows.exp.HPCON,
-    signal: ?windows.HANDLE,
     client: ?windows.HANDLE,
 };
 
@@ -958,7 +958,6 @@ const Subprocess = struct {
             if (self.handoff) |ho| {
                 windows.CloseHandle(ho.our_read);
                 windows.CloseHandle(ho.our_write);
-                if (ho.signal) |s| windows.CloseHandle(s);
                 windows.conpty.closePseudoConsole(ho.hpc);
                 self.handoff = null;
             }
@@ -983,7 +982,7 @@ const Subprocess = struct {
         // exact anonymous return type.
         if (comptime builtin.os.tag == .windows) {
             if (self.handoff) |ho| {
-                const pty = Pty.openHandoff(ho.our_read, ho.our_write, ho.hpc, ho.signal, .{
+                const pty = Pty.openHandoff(ho.our_read, ho.our_write, ho.hpc, .{
                     .ws_row = @intCast(self.grid_size.rows),
                     .ws_col = @intCast(self.grid_size.columns),
                     .ws_xpixel = @intCast(self.screen_size.width),

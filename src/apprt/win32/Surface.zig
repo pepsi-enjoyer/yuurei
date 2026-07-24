@@ -575,11 +575,11 @@ pub fn defaultTermioEnv(self: *Self) !std.process.EnvMap {
 /// Consume a staged default-terminal handoff, handing its
 /// pipe/HPCON/client handles to termio. Called once from core
 /// Surface.init (via @hasDecl) before termio starts; returns null for a
-/// normal surface. Ownership: the pipes, the adopted HPCON, and the
-/// signal move to the pty (released on pty deinit, which frees conhost's
-/// ConPTY). The client handle (conhost's short-lived bootstrap) is
-/// deliberately released by nobody on this path — see the ownership note
-/// in termio/Exec.zig's handoff branch.
+/// normal surface. Ownership: the pipes and the adopted HPCON move to the
+/// pty (released on pty deinit, which frees conhost's ConPTY). The client
+/// handle (conhost's short-lived bootstrap) is deliberately released by
+/// nobody on this path — see the ownership note in termio/Exec.zig's
+/// handoff branch.
 pub fn takeHandoff(self: *Self) ?termio.Exec.HandoffHandles {
     const h = self.pending_handoff orelse return null;
     self.pending_handoff = null;
@@ -587,7 +587,6 @@ pub fn takeHandoff(self: *Self) ?termio.Exec.HandoffHandles {
         .our_read = h.our_read,
         .our_write = h.our_write,
         .hpc = h.hpc,
-        .signal = h.signal,
         .client = h.client,
     };
 }

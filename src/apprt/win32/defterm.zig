@@ -442,13 +442,10 @@ const IClassFactory = extern struct {
 pub const Handoff = struct {
     our_read: HANDLE, // app output (== pty.out_pipe)
     our_write: HANDLE, // user input (== pty.in_pipe)
+    /// The adopted ConPTY. Owns duplicates of conhost's server/reference/
+    /// signal handles (see establishPtyHandoff), which is what lets us both
+    /// resize and tear it down normally.
     hpc: HPCON,
-    /// Reserved for the resize follow-up: a duplicate of conhost's signal
-    /// pipe. Always null today — resize-reflow is not yet supported for a
-    /// handoff (ResizePseudoConsole rejects a packed HPCON, and raw
-    /// signal-pipe writes desynced the ConPTY). Plumbed through so the
-    /// eventual fix won't need to re-thread it.
-    signal: ?HANDLE,
     client: ?HANDLE,
     /// The console app's window title (from conhost's startup info):
     /// `title_buf[0..title_len]`, empty when none. Stored as buffer+length
@@ -459,13 +456,11 @@ pub const Handoff = struct {
 };
 
 /// Release a handoff that never reached a surface (declined, or the app
-/// quit with it still queued). Closes our pipe ends, the signal dup, the
-/// client, and the HPCON — which releases the packed server/reference/
-/// signal.
+/// quit with it still queued). Closes our pipe ends and the client, then
+/// the HPCON — which releases the packed server/reference/signal duplicates.
 pub fn closeHandoff(h: Handoff) void {
     _ = winapi.CloseHandle(h.our_read);
     _ = winapi.CloseHandle(h.our_write);
-    if (h.signal) |s| _ = winapi.CloseHandle(s);
     if (h.client) |c| _ = winapi.CloseHandle(c);
     conpty.closePseudoConsole(h.hpc);
 }
@@ -554,41 +549,63 @@ fn establishPtyHandoff(
         return E_FAIL;
     };
 
-    // NOTE (resize follow-up): window-resize reflow is not yet wired for a
-    // handoff. ResizePseudoConsole rejects a *packed* HPCON (E_HANDLE), and
-    // writing resize packets to a duplicate of conhost's signal pipe
-    // desynced the ConPTY. The `signal` field is plumbed through (null for
-    // now) so a future fix can drive resizes without re-threading it.
-    const signal_dup: ?HANDLE = null;
+    // Pack must own DUPLICATES of the three ConPTY handles, not the raw
+    // [in] params: the COM stub frees signal/reference/server/client after
+    // this method returns (the same reason closing `client` ourselves
+    // corrupted the handle table). If the packed HPCON kept the raw signal
+    // handle, its later resize writes would hit a closed handle (E_HANDLE)
+    // even though I/O — which only uses the pipes — still worked. Microsoft's
+    // handoff receiver duplicates them the same way.
+    const dup_server = dupHandle(server.?) orelse {
+        closePipeEnds(pipes);
+        declineHandles(signal, reference, server, client);
+        return E_FAIL;
+    };
+    const dup_reference = dupHandle(reference.?) orelse {
+        _ = winapi.CloseHandle(dup_server);
+        closePipeEnds(pipes);
+        declineHandles(signal, reference, server, client);
+        return E_FAIL;
+    };
+    const dup_signal = dupHandle(signal.?) orelse {
+        _ = winapi.CloseHandle(dup_server);
+        _ = winapi.CloseHandle(dup_reference);
+        closePipeEnds(pipes);
+        declineHandles(signal, reference, server, client);
+        return E_FAIL;
+    };
 
     // Adopt conhost's ConPTY: ConptyPackPseudoConsole folds the
-    // server/reference/signal handles into an HPCON we drive normally
-    // (close, and — for a normal pty — resize). This is the step that
-    // actually accepts the handoff; without it the client's console never
-    // becomes functional. It consumes those three handles on success.
+    // server/reference/signal duplicates into an HPCON we drive normally
+    // (resize + close). This is the step that actually accepts the handoff;
+    // without it the client's console never becomes functional. It consumes
+    // the three duplicates on success (released by closePseudoConsole).
     var hpc: HPCON = undefined;
-    const prc = conpty.packPseudoConsole(server.?, reference.?, signal.?, &hpc) catch {
+    const prc = conpty.packPseudoConsole(dup_server, dup_reference, dup_signal, &hpc) catch {
         log.warn("defterm: conpty.dll has no pack entry point; cannot adopt handoff", .{});
-        if (signal_dup) |s| _ = winapi.CloseHandle(s);
+        _ = winapi.CloseHandle(dup_server);
+        _ = winapi.CloseHandle(dup_reference);
+        _ = winapi.CloseHandle(dup_signal);
         closePipeEnds(pipes);
         declineHandles(signal, reference, server, client);
         return E_FAIL;
     };
     if (prc != S_OK) {
         log.warn("defterm: ConptyPackPseudoConsole failed hr={x}", .{@as(u32, @bitCast(prc))});
-        if (signal_dup) |s| _ = winapi.CloseHandle(s);
+        _ = winapi.CloseHandle(dup_server);
+        _ = winapi.CloseHandle(dup_reference);
+        _ = winapi.CloseHandle(dup_signal);
         closePipeEnds(pipes);
         declineHandles(signal, reference, server, client);
         return E_FAIL;
     }
 
-    // From here the HPCON owns server/reference/signal; our pipe ends and
+    // From here the HPCON owns the three duplicates; our pipe ends and
     // client belong to `h`. `closeHandoff` releases all of that.
     var h: Handoff = .{
         .our_read = pipes.our_read,
         .our_write = pipes.our_write,
         .hpc = hpc,
-        .signal = signal_dup,
         .client = client,
         .title_buf = undefined,
         .title_len = 0,
@@ -621,6 +638,18 @@ fn establishPtyHandoff(
 
 /// Decline a handoff before it is adopted: close the raw handles conhost
 /// passed us (still ours until ConptyPackPseudoConsole consumes them).
+/// Duplicate a handle within this process (SAME_ACCESS). Used to give the
+/// packed HPCON copies of conhost's ConPTY handles that outlive the COM
+/// stub freeing the raw [in] params. Returns null on failure.
+fn dupHandle(h: HANDLE) ?HANDLE {
+    const cur = winapi.GetCurrentProcess();
+    var out: HANDLE = undefined;
+    if (winapi.DuplicateHandle(cur, h, cur, &out, 0, 0, winapi.DUPLICATE_SAME_ACCESS) == 0) {
+        return null;
+    }
+    return out;
+}
+
 fn declineHandles(signal: ?HANDLE, reference: ?HANDLE, server: ?HANDLE, client: ?HANDLE) void {
     if (signal) |s| _ = winapi.CloseHandle(s);
     if (reference) |r| _ = winapi.CloseHandle(r);
