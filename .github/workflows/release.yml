@@ -54,12 +54,16 @@ jobs:
           Copy-Item LICENSE "$pkg\"
           Copy-Item README.md "$pkg\"
           # Third-party notices: vendored conpty (MIT, microsoft/terminal)
-          # plus vendored libxev (MIT, mitchellh/libxev — statically linked).
+          # plus libxev (MIT, mitchellh/libxev — statically linked). Since
+          # the Zig 0.16 upgrade libxev is the upstream package dependency
+          # (no longer a vendored fork); its LICENSE is read from the
+          # build-populated zig-pkg dependency dir, globbed so version
+          # bumps don't break this step.
+          $libxevDir = Get-ChildItem zig-pkg -Directory -Filter 'libxev-*' | Select-Object -First 1
           $notices = (Get-Content vendor\conpty\NOTICE.md -Raw) + "`n`n---`n`n" +
-            "## libxev (vendored, statically linked)`n`n" +
-            "yuurei vendors a fork of libxev (mitchellh/libxev) with a Windows`n" +
-            "IOCP wakeup fix; see vendor/libxev. Original license:`n`n" +
-            (Get-Content vendor\libxev\LICENSE -Raw)
+            "## libxev (statically linked)`n`n" +
+            "yuurei statically links libxev (mitchellh/libxev). License:`n`n" +
+            (Get-Content (Join-Path $libxevDir.FullName 'LICENSE') -Raw)
           Set-Content -Path "$pkg\THIRD_PARTY_NOTICES.md" -Value $notices
           Compress-Archive -Path $pkg -DestinationPath "$pkg.zip"
           $hash = (Get-FileHash "$pkg.zip" -Algorithm SHA256).Hash.ToLower()

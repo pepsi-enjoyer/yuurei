@@ -67,9 +67,16 @@ comptime {
     //   3. Weak COFF builds fatally error because MSVC's linker
     //      errors when two identical linked symbols exist. MSVC has
     //      CRT which links so we don't need this there anyways.
+    //   4. (fork) The MSVC ABI is excluded entirely, not just weak
+    //      COFF: a *dynamic Lib* on MSVC gets strong linkage above and
+    //      then collides with libvcruntime.lib's memset at link time
+    //      (duplicate symbol building ghostty-internal.dll). Per the
+    //      note in 3, the MSVC CRT already supplies an optimized
+    //      memset, so the override buys nothing on this ABI anyway.
     const enabled =
         std.simd.suggestVectorLength(u8) != null and
         builtin.object_format != .c and
+        builtin.abi != .msvc and
         !(linkage == .weak and builtin.object_format == .coff);
 
     if (enabled) @export(&memset, .{
