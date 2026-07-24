@@ -261,14 +261,36 @@ pub const CreateOptions = struct {
     no_initial_tab: bool = false,
 };
 
-/// The docked geometry for a quick terminal on the primary monitor,
-/// honoring quick-terminal-position and -size. Delegates the size to
-/// the shared QuickTerminalSize.calculate so the primary/secondary
-/// axis and per-position defaults match the other apprts.
+/// The docked geometry for a quick terminal, honoring
+/// quick-terminal-position and -size. Anchored to the WORK AREA of the
+/// monitor under the cursor: the summon hotkey is global, so the
+/// terminal should appear where the user is working (not always the
+/// primary monitor), and the work area keeps it off the taskbar.
+/// Delegates the size to the shared QuickTerminalSize.calculate so the
+/// primary/secondary axis and per-position defaults match the other
+/// apprts.
 fn quickTerminalGeometry(app: *App) struct { x: i32, y: i32, w: i32, h: i32 } {
     const pos = app.config.@"quick-terminal-position";
-    const sw: i32 = @max(1, winapi.GetSystemMetrics(winapi.SM_CXSCREEN));
-    const sh: i32 = @max(1, winapi.GetSystemMetrics(winapi.SM_CYSCREEN));
+
+    // Monitor under the cursor, falling back to the primary's metrics
+    // if anything fails.
+    var work: winapi.RECT = .{
+        .left = 0,
+        .top = 0,
+        .right = @max(1, winapi.GetSystemMetrics(winapi.SM_CXSCREEN)),
+        .bottom = @max(1, winapi.GetSystemMetrics(winapi.SM_CYSCREEN)),
+    };
+    cursor_mon: {
+        var pt: winapi.POINT = .{ .x = 0, .y = 0 };
+        if (winapi.GetCursorPos(&pt) == 0) break :cursor_mon;
+        const mon = winapi.MonitorFromPoint(pt, winapi.MONITOR_DEFAULTTONEAREST);
+        var mi: winapi.MONITORINFO = undefined;
+        mi.cbSize = @sizeOf(winapi.MONITORINFO);
+        if (winapi.GetMonitorInfoW(mon, &mi) == 0) break :cursor_mon;
+        work = mi.rcWork;
+    }
+    const sw: i32 = @max(1, work.right - work.left);
+    const sh: i32 = @max(1, work.bottom - work.top);
 
     const dims = app.config.@"quick-terminal-size".calculate(pos, .{
         .width = @intCast(sw),
@@ -277,11 +299,14 @@ fn quickTerminalGeometry(app: *App) struct { x: i32, y: i32, w: i32, h: i32 } {
     const w: i32 = @intCast(dims.width);
     const h: i32 = @intCast(dims.height);
     const x: i32, const y: i32 = switch (pos) {
-        .top => .{ @divTrunc(sw - w, 2), 0 },
-        .bottom => .{ @divTrunc(sw - w, 2), sh - h },
-        .left => .{ 0, @divTrunc(sh - h, 2) },
-        .right => .{ sw - w, @divTrunc(sh - h, 2) },
-        .center => .{ @divTrunc(sw - w, 2), @divTrunc(sh - h, 2) },
+        .top => .{ work.left + @divTrunc(sw - w, 2), work.top },
+        .bottom => .{ work.left + @divTrunc(sw - w, 2), work.bottom - h },
+        .left => .{ work.left, work.top + @divTrunc(sh - h, 2) },
+        .right => .{ work.right - w, work.top + @divTrunc(sh - h, 2) },
+        .center => .{
+            work.left + @divTrunc(sw - w, 2),
+            work.top + @divTrunc(sh - h, 2),
+        },
     };
     return .{ .x = x, .y = y, .w = w, .h = h };
 }
