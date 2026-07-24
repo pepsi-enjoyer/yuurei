@@ -583,14 +583,15 @@ pub const ThreadData = struct {
 /// opening a pty and spawning a command. The pipes and the adopted HPCON
 /// (`hpc`, from ConptyPackPseudoConsole — it owns duplicates of conhost's
 /// server/reference/signal handles) are consumed by the pty (openHandoff)
-/// and released on pty deinit. `client` is conhost's short-lived bootstrap
-/// process handle — useless for exit detection; see the ownership note in
-/// `start`'s handoff branch.
+/// and released on pty deinit. Conhost's `client` bootstrap handle is
+/// never retained: the RPC stub frees the [in] handle after the COM call
+/// returns, so a stored copy would be stale (closing one once corrupted
+/// the handle table), and the process it names exits within tens of ms
+/// anyway — useless for exit detection.
 pub const HandoffHandles = struct {
     our_read: windows.HANDLE,
     our_write: windows.HANDLE,
     hpc: windows.HPCON,
-    client: ?windows.HANDLE,
 };
 
 pub const Config = struct {
@@ -946,8 +947,7 @@ const Subprocess = struct {
         // pty (init failed after takeHandoff): release its pipes and the
         // adopted ConPTY so conhost's session doesn't hang waiting on a
         // terminal that will never read. closePseudoConsole tears the
-        // ConPTY down (the client then falls back / exits). The client
-        // bootstrap handle is left unclosed, matching start()'s path.
+        // ConPTY down (the console client then falls back / exits).
         if (comptime builtin.os.tag == .windows) {
             if (self.handoff) |ho| {
                 windows.CloseHandle(ho.our_read);
@@ -984,20 +984,19 @@ const Subprocess = struct {
                 });
                 self.pty = pty;
 
-                // conhost's `client` handle is a short-lived bootstrap, not
-                // the interactive shell (it exits within tens of ms while
-                // the shell keeps running), so it's useless for exit
-                // detection. Carry no pid: threadEnter skips the process
-                // watcher for a handoff, and killCommand no-ops on a null
-                // pid (the shell exits when we close the HPCON at
-                // teardown).
+                // Carry no pid: conhost's bootstrap client process is not
+                // the interactive shell and is never retained (see
+                // HandoffHandles), threadEnter skips the process watcher
+                // for a handoff, and killCommand no-ops on a null pid
+                // (the shell exits when we close the HPCON at teardown).
                 //
-                // OWNERSHIP NOTE: nothing closes ho.client on this
-                // (successful) path — one handle per handoff is leaked
-                // DELIBERATELY. Closing it here once corrupted the handle
-                // table (an unrelated libxev IOCP handle went invalid →
-                // teardown panic) for reasons not yet understood. Do not
-                // add a close without re-running the live handoff test.
+                // Historical note: a `client` handle used to be stored
+                // here, and closing it corrupted the handle table (an
+                // unrelated libxev IOCP handle went invalid → teardown
+                // panic). Now understood: the RPC stub frees the [in]
+                // system_handle after EstablishPtyHandoff returns, so our
+                // close hit a recycled handle value. The handle is no
+                // longer stored at all.
                 self.process = .{ .fork_exec = .{
                     .path = "",
                     .args = &.{},

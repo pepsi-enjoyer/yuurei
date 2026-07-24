@@ -446,7 +446,6 @@ pub const Handoff = struct {
     /// signal handles (see establishPtyHandoff), which is what lets us both
     /// resize and tear it down normally.
     hpc: HPCON,
-    client: ?HANDLE,
     /// The console app's window title (from conhost's startup info):
     /// `title_buf[0..title_len]`, empty when none. Stored as buffer+length
     /// rather than a slice so copying the struct by value (COM callback →
@@ -456,12 +455,11 @@ pub const Handoff = struct {
 };
 
 /// Release a handoff that never reached a surface (declined, or the app
-/// quit with it still queued). Closes our pipe ends and the client, then
-/// the HPCON — which releases the packed server/reference/signal duplicates.
+/// quit with it still queued). Closes our pipe ends, then the HPCON —
+/// which releases the packed server/reference/signal duplicates.
 pub fn closeHandoff(h: Handoff) void {
     _ = winapi.CloseHandle(h.our_read);
     _ = winapi.CloseHandle(h.our_write);
-    if (h.client) |c| _ = winapi.CloseHandle(c);
     conpty.closePseudoConsole(h.hpc);
 }
 
@@ -528,24 +526,29 @@ fn establishPtyHandoff(
     in_out.* = null;
     out_out.* = null;
 
-    // The proxy already duplicated signal/reference/server/client into
-    // this process; each early return must close them or they leak. On
-    // success server/reference/signal are consumed by the packed HPCON and
-    // the rest move into the Handoff (the callback owns them).
-    const cb = on_handoff orelse {
-        declineHandles(signal, reference, server, client);
-        return E_FAIL;
-    };
+    // conhost's bootstrap client process handle: deliberately unused.
+    // The stub frees it after we return, it isn't the interactive
+    // shell, and retaining a copy once caused a handle-table
+    // corruption (see the ownership comment below).
+    _ = client;
+
+    // Handle ownership (the MS `system_handle` contract): the RPC stub
+    // duplicated signal/reference/server/client into this process, and
+    // the STUB frees those [in] duplicates after this method returns.
+    // We must therefore NEVER close the raw params — a failure path
+    // that closed them would double-close (this exact mistake once
+    // corrupted the handle table via the `client` handle). Anything we
+    // keep past the return must be our own duplicate: the packed HPCON
+    // owns dups of server/reference/signal (below); nothing else is
+    // retained.
+    const cb = on_handoff orelse return E_FAIL;
 
     // conhost always supplies all three ConPTY handles; without them we
     // can't adopt the pseudoconsole.
-    if (signal == null or reference == null or server == null) {
-        declineHandles(signal, reference, server, client);
+    if (signal == null or reference == null or server == null)
         return E_FAIL;
-    }
 
     const pipes = createHandoffPipes() catch {
-        declineHandles(signal, reference, server, client);
         return E_FAIL;
     };
 
@@ -558,20 +561,17 @@ fn establishPtyHandoff(
     // handoff receiver duplicates them the same way.
     const dup_server = dupHandle(server.?) orelse {
         closePipeEnds(pipes);
-        declineHandles(signal, reference, server, client);
         return E_FAIL;
     };
     const dup_reference = dupHandle(reference.?) orelse {
         _ = winapi.CloseHandle(dup_server);
         closePipeEnds(pipes);
-        declineHandles(signal, reference, server, client);
         return E_FAIL;
     };
     const dup_signal = dupHandle(signal.?) orelse {
         _ = winapi.CloseHandle(dup_server);
         _ = winapi.CloseHandle(dup_reference);
         closePipeEnds(pipes);
-        declineHandles(signal, reference, server, client);
         return E_FAIL;
     };
 
@@ -587,7 +587,6 @@ fn establishPtyHandoff(
         _ = winapi.CloseHandle(dup_reference);
         _ = winapi.CloseHandle(dup_signal);
         closePipeEnds(pipes);
-        declineHandles(signal, reference, server, client);
         return E_FAIL;
     };
     if (prc != S_OK) {
@@ -596,17 +595,18 @@ fn establishPtyHandoff(
         _ = winapi.CloseHandle(dup_reference);
         _ = winapi.CloseHandle(dup_signal);
         closePipeEnds(pipes);
-        declineHandles(signal, reference, server, client);
         return E_FAIL;
     }
 
-    // From here the HPCON owns the three duplicates; our pipe ends and
-    // client belong to `h`. `closeHandoff` releases all of that.
+    // From here the HPCON owns the three duplicates; our pipe ends
+    // belong to `h`. `closeHandoff` releases all of that. The `client`
+    // param (conhost's short-lived bootstrap process) is deliberately
+    // NOT retained: it is useless for exit detection and the stub frees
+    // it after we return, so any stored copy would be a stale handle.
     var h: Handoff = .{
         .our_read = pipes.our_read,
         .our_write = pipes.our_write,
         .hpc = hpc,
-        .client = client,
         .title_buf = undefined,
         .title_len = 0,
     };
@@ -648,13 +648,6 @@ fn dupHandle(h: HANDLE) ?HANDLE {
         return null;
     }
     return out;
-}
-
-fn declineHandles(signal: ?HANDLE, reference: ?HANDLE, server: ?HANDLE, client: ?HANDLE) void {
-    if (signal) |s| _ = winapi.CloseHandle(s);
-    if (reference) |r| _ = winapi.CloseHandle(r);
-    if (server) |s| _ = winapi.CloseHandle(s);
-    if (client) |c| _ = winapi.CloseHandle(c);
 }
 
 /// Close every end of a just-created pipe pair (used when adoption fails
