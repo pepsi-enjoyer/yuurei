@@ -13,6 +13,7 @@
 //! A user file whose name matches an auto-detected shell shadows it.
 
 const std = @import("std");
+const global = @import("../../global.zig");
 const winapi = @import("winapi.zig");
 
 const log = std.log.scoped(.win32);
@@ -82,14 +83,14 @@ fn nameLessThan(_: void, a: Profile, b: Profile) bool {
 /// User overlay fragments: %LOCALAPPDATA%\ghostty\profiles\*.conf,
 /// profile name = file name without the extension.
 fn scanUserDir(alloc: std.mem.Allocator, items: *std.ArrayList(Profile)) void {
-    const base = std.process.getEnvVarOwned(alloc, "LOCALAPPDATA") catch return;
+    const base = global.environ().getAlloc(alloc, "LOCALAPPDATA") catch return;
     const dir_path = std.fs.path.join(alloc, &.{ base, "ghostty", "profiles" }) catch return;
 
-    var dir = std.fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch return;
-    defer dir.close();
+    var dir = std.Io.Dir.openDirAbsolute(global.io(), dir_path, .{ .iterate = true }) catch return;
+    defer dir.close(global.io());
 
     var it = dir.iterate();
-    while (it.next() catch null) |entry| {
+    while (it.next(global.io()) catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.ascii.endsWithIgnoreCase(entry.name, ".conf")) continue;
         const stem = entry.name[0 .. entry.name.len - ".conf".len];
@@ -142,7 +143,7 @@ fn onPath(comptime exe: []const u8) bool {
 }
 
 fn fileExists(path: []const u8) bool {
-    std.fs.accessAbsolute(path, .{}) catch return false;
+    std.Io.Dir.accessAbsolute(global.io(), path, .{}) catch return false;
     return true;
 }
 
@@ -182,7 +183,7 @@ fn detectShells(alloc: std.mem.Allocator, items: *std.ArrayList(Profile)) void {
     // 8.3 short path. (PATH probing is wrong here: a bare bash.exe
     // resolves to the WSL launcher in System32, not Git Bash.)
     git: {
-        const pf = std.process.getEnvVarOwned(alloc, "ProgramFiles") catch
+        const pf = global.environ().getAlloc(alloc, "ProgramFiles") catch
             break :git;
         const bash = std.fs.path.join(alloc, &.{ pf, "Git", "bin", "bash.exe" }) catch
             break :git;
@@ -306,7 +307,7 @@ fn runCapture(
     defer out.deinit(alloc);
     var buf: [4096]u8 = undefined;
     var timed_out = false;
-    const deadline = std.time.milliTimestamp() + @as(i64, timeout_ms);
+    const deadline = std.Io.Timestamp.now(global.io(), .awake).toMilliseconds() + @as(i64, timeout_ms);
     while (true) {
         var avail: winapi.DWORD = 0;
         // A broken pipe (child gone, nothing buffered) ends the read.
@@ -322,12 +323,12 @@ fn runCapture(
         // Nothing right now: done if the child finished (pipe was just
         // drained), killed if we're out of time, else wait briefly.
         if (winapi.WaitForSingleObject(pi.hProcess.?, 0) == 0) break;
-        if (std.time.milliTimestamp() >= deadline) {
+        if (std.Io.Timestamp.now(global.io(), .awake).toMilliseconds() >= deadline) {
             _ = winapi.TerminateProcess(pi.hProcess.?, 1);
             timed_out = true;
             break;
         }
-        std.Thread.sleep(5 * std.time.ns_per_ms);
+        std.Io.sleep(global.io(), .fromMilliseconds(5), .awake) catch {};
     }
 
     // Only a clean, complete run yields usable output. A wedged child we

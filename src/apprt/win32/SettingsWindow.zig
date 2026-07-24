@@ -13,12 +13,12 @@
 const SettingsWindow = @This();
 
 const std = @import("std");
+const global = @import("../../global.zig");
 const Allocator = std.mem.Allocator;
 const App = @import("App.zig");
 const Window = @import("Window.zig");
 const winapi = @import("winapi.zig");
 const configpkg = @import("../../config.zig");
-const global_state = &@import("../../global.zig").state;
 
 const log = std.log.scoped(.win32);
 
@@ -263,16 +263,16 @@ fn collectThemes(self: *SettingsWindow) void {
     const arena = self.arena.allocator();
     var names: std.ArrayList([]const u8) = .empty;
 
-    const res = global_state.resources_dir.app() orelse return;
+    const res = global.resourcesDir().app() orelse return;
     const dir_path = std.fs.path.join(arena, &.{ res, "themes" }) catch return;
-    var dir = std.fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch {
+    var dir = std.Io.Dir.openDirAbsolute(global.io(), dir_path, .{ .iterate = true }) catch {
         log.info("settings: no themes dir at {s}", .{dir_path});
         return;
     };
-    defer dir.close();
+    defer dir.close(global.io());
 
     var it = dir.iterate();
-    while (it.next() catch null) |entry| {
+    while (it.next(global.io()) catch null) |entry| {
         if (entry.kind != .file) continue;
         const name = arena.dupe(u8, entry.name) catch continue;
         names.append(arena, name) catch continue;
@@ -344,12 +344,8 @@ fn loadCurrentValues(self: *SettingsWindow) void {
     const alloc = self.app.core_app.alloc;
     const path = configpkg.edit.openPath(alloc) catch return;
     defer alloc.free(path);
-    const file = std.fs.openFileAbsolute(path, .{}) catch return;
-    const text = file.readToEndAlloc(alloc, 4 << 20) catch {
-        file.close();
+    const text = std.Io.Dir.cwd().readFileAlloc(global.io(), path, alloc, .limited(4 << 20)) catch
         return;
-    };
-    file.close();
     defer alloc.free(text);
 
     if (configValue(text, "theme")) |v| self.theme_idx = indexOf(self.themes, v);
@@ -402,16 +398,10 @@ fn setValue(self: *SettingsWindow, key: []const u8, value: []const u8) void {
     // baseline and then truncate-writing would replace the user's whole
     // config with the single edited key. Only a missing file (no config
     // yet) legitimately starts from empty.
-    const text: []u8 = if (std.fs.openFileAbsolute(path, .{})) |file| blk: {
-        defer file.close();
-        break :blk file.readToEndAlloc(alloc, 4 << 20) catch |err| {
-            log.warn("settings: cannot read config; not saving err={}", .{err});
-            return;
-        };
-    } else |err| switch (err) {
+    const text: []u8 = std.Io.Dir.cwd().readFileAlloc(global.io(), path, alloc, .limited(4 << 20)) catch |err| switch (err) {
         error.FileNotFound => &.{},
         else => {
-            log.warn("settings: cannot open config; not saving err={}", .{err});
+            log.warn("settings: cannot read config; not saving err={}", .{err});
             return;
         },
     };
@@ -471,31 +461,40 @@ fn setValue(self: *SettingsWindow, key: []const u8, value: []const u8) void {
     // concurrent instances don't contend for one deterministic ".tmp".
     const tmp = std.fmt.allocPrint(alloc, "{s}.{d}.tmp", .{
         path,
-        std.os.windows.kernel32.GetCurrentThreadId(),
+        std.os.windows.GetCurrentThreadId(),
     }) catch return;
     defer alloc.free(tmp);
     {
-        const file = std.fs.createFileAbsolute(tmp, .{ .truncate = true }) catch |err| {
+        const io = global.io();
+        const file = std.Io.Dir.createFileAbsolute(io, tmp, .{ .truncate = true }) catch |err| {
             log.warn("settings: open temp config for write failed err={}", .{err});
             return;
         };
-        defer file.close();
-        file.writeAll(out.items) catch |err| {
+        defer file.close(io);
+        var wbuf: [4096]u8 = undefined;
+        var fw = file.writer(io, &wbuf);
+        if (fw.interface.writeAll(out.items)) |_| {
+            fw.interface.flush() catch |err| {
+                log.warn("settings: flush config failed err={}", .{err});
+                std.Io.Dir.deleteFileAbsolute(io, tmp) catch {};
+                return;
+            };
+        } else |err| {
             log.warn("settings: write config failed err={}", .{err});
-            std.fs.deleteFileAbsolute(tmp) catch {};
+            std.Io.Dir.deleteFileAbsolute(io, tmp) catch {};
             return;
-        };
-        // Flush before the rename publishes the file; a failed flush must
+        }
+        // fsync before the rename publishes the file; a failed sync must
         // abort so a half-written config isn't made live.
-        file.sync() catch |err| {
-            log.warn("settings: flush config failed err={}", .{err});
-            std.fs.deleteFileAbsolute(tmp) catch {};
+        file.sync(io) catch |err| {
+            log.warn("settings: sync config failed err={}", .{err});
+            std.Io.Dir.deleteFileAbsolute(io, tmp) catch {};
             return;
         };
     }
-    std.fs.renameAbsolute(tmp, path) catch |err| {
+    std.Io.Dir.renameAbsolute(tmp, path, global.io()) catch |err| {
         log.warn("settings: replace config failed err={}", .{err});
-        std.fs.deleteFileAbsolute(tmp) catch {};
+        std.Io.Dir.deleteFileAbsolute(global.io(), tmp) catch {};
         return;
     };
 

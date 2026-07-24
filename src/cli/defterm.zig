@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const args = @import("args.zig");
+const global = @import("../global.zig");
 const Action = @import("ghostty.zig").Action;
 const Allocator = std.mem.Allocator;
 
@@ -30,7 +31,7 @@ pub const Options = struct {
 ///   ghostty +defterm --unregister # remove the registration
 ///   ghostty +defterm --status     # print current state
 pub fn run(alloc: Allocator) !u8 {
-    var iter = try args.argsIterator(alloc);
+    var iter = try args.argsIterator(alloc, global.args());
     defer iter.deinit();
     return try runArgs(alloc, &iter);
 }
@@ -40,7 +41,10 @@ fn runArgs(alloc: Allocator, argsIter: anytype) !u8 {
     defer opts.deinit();
     try args.parse(Options, alloc, &opts, argsIter);
 
-    const stdout = std.fs.File.stdout().deprecatedWriter();
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout_writer = std.Io.File.stdout().writer(global.io(), &stdout_buf);
+    const stdout = &stdout_writer.interface;
+    defer stdout.flush() catch {};
 
     if (comptime builtin.os.tag != .windows) {
         try stdout.writeAll("+defterm is only supported on Windows.\n");

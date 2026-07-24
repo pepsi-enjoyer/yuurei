@@ -181,7 +181,7 @@ pub const DXGI_SWAP_CHAIN_DESC1 = extern struct {
     Width: u32,
     Height: u32,
     Format: u32,
-    Stereo: windows.BOOL = 0,
+    Stereo: windows.BOOL = .fromBool(false),
     SampleDesc: DXGI_SAMPLE_DESC = .{},
     BufferUsage: u32,
     BufferCount: u32,
@@ -568,7 +568,7 @@ pub const Presenter = struct {
         errdefer releaseAny(dcomp);
 
         var target: ?*IDCompositionTarget = null;
-        if (!ok(dcomp.vtable.CreateTargetForHwnd(dcomp, hwnd, windows.TRUE, &target)))
+        if (!ok(dcomp.vtable.CreateTargetForHwnd(dcomp, hwnd, @as(windows.BOOL, .fromBool(true)), &target)))
             return error.DCompTargetFailed;
         errdefer releaseAny(target.?);
 
@@ -673,7 +673,7 @@ pub const Presenter = struct {
 
     pub fn lock(self: *Presenter) bool {
         const obj = self.interop_object orelse return false;
-        return self.interop.lock(self.interop_device, 1, &[_]windows.HANDLE{obj}) != 0;
+        return self.interop.lock(self.interop_device, 1, &[_]windows.HANDLE{obj}).toBool();
     }
 
     pub fn unlock(self: *Presenter) void {

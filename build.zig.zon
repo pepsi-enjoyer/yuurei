@@ -17,17 +17,17 @@
 
         // Zig libs
         .libxev = .{
-            // mitchellh/libxev 34fa508, vendored with a Windows fix:
-            // AsyncIOCP heap-allocates its notify state so by-value
-            // copies share it. Upstream's inline fields fork the state
-            // on copy, so notify() through a copy made before wait()
-            // (e.g. termio's copy of the renderer wakeup) is silently
-            // dropped — every keystroke echo then waits for the next
-            // ~600ms cursor timer to be drawn. See
-            // vendor/libxev/src/watcher/async.zig (AsyncIOCP.State).
-            // (Upstream moved to libxev 9ce8e8e for Zig 0.16; the vendored
-            // copy is patched for 0.16 in-tree to keep this fix.)
-            .path = "vendor/libxev",
+            // mitchellh/libxev 9ce8e8e (Zig 0.16). NOTE: the fork previously
+            // vendored libxev 34fa508 with a Windows fix (AsyncIOCP
+            // heap-allocates its notify state so by-value copies share it;
+            // upstream's inline fields fork the state on copy, silently
+            // dropping notify() through a pre-wait() copy of the renderer
+            // wakeup — the keystroke-latency saga). Reverted to the upstream
+            // 0.16 dep to land the Zig-0.16 upgrade; RE-BENCHMARK typing
+            // latency (bench/) and re-apply the fix if it regressed. The old
+            // vendored tree is kept under vendor/libxev for reference.
+            .url = "https://deps.files.ghostty.org/libxev-9ce8e8e6ff89e583258a7f8e7adeeeaeae8611bf.tar.gz",
+            .hash = "libxev-0.0.0-86vtcwIRFADbH4hk-EjROXxlrKIRPQdA41XiTSytYO-F",
             .lazy = true,
         },
         .vaxis = .{

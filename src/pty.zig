@@ -475,7 +475,7 @@ const WindowsPty = struct {
     pub fn openHandoff(
         our_read: windows.HANDLE,
         our_write: windows.HANDLE,
-        hpc: windows.exp.HPCON,
+        hpc: windows.HPCON,
         size: winsize,
     ) Pty {
         return .{

@@ -7,6 +7,7 @@ const Self = @This();
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const apprt = @import("../../apprt.zig");
+const global = @import("../../global.zig");
 const internal_os = @import("../../os/main.zig");
 const terminal = @import("../../terminal/main.zig");
 const termio = @import("../../termio.zig");
@@ -568,8 +569,9 @@ pub fn setClipboard(
     return error.SetClipboardFailed;
 }
 
-pub fn defaultTermioEnv(self: *Self) !std.process.EnvMap {
-    return try internal_os.getEnvMap(self.app.core_app.alloc);
+pub fn defaultTermioEnv(self: *Self) !std.process.Environ.Map {
+    _ = self;
+    return try global.environMap();
 }
 
 /// Consume a staged default-terminal handoff, handing its

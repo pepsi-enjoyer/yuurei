@@ -6,6 +6,7 @@ const App = @This();
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const apprt = @import("../../apprt.zig");
+const global = @import("../../global.zig");
 const input = @import("../../input.zig");
 const configpkg = @import("../../config.zig");
 const Config = configpkg.Config;
@@ -120,7 +121,7 @@ session_restored: bool = false,
 /// S_OK has already reached conhost. Guarded by a mutex only in case a
 /// future COM config delivers the call off the UI thread.
 pending_handoffs: std.ArrayList(defterm.Handoff) = .empty,
-handoff_mutex: std.Thread.Mutex = .{},
+handoff_mutex: std.Io.Mutex = .init,
 
 pub fn init(
     self: *App,
@@ -131,7 +132,7 @@ pub fn init(
 ) !void {
     _ = opts;
 
-    const module = std.os.windows.kernel32.GetModuleHandleW(null) orelse
+    const module = winapi.GetModuleHandleW(null) orelse
         return error.GetModuleHandleFailed;
     const hinstance: winapi.HINSTANCE = @ptrCast(module);
 
@@ -275,7 +276,7 @@ pub fn init(
         // kill every cold-start console handoff.
         if (config._diagnostics.containsLocation(.cli) and !embedding) {
             log.warn("CLI errors detected, exiting", .{});
-            _ = core_app.mailbox.push(.{ .quit = {} }, .{ .forever = {} });
+            _ = core_app.mailbox.push(global.io(), .{ .quit = {} }, .{ .forever = {} });
         }
     }
 
@@ -286,7 +287,9 @@ pub fn init(
     // windows-flip-model at runtime needs a restart to take effect
     // (the config doc already notes it only affects new terminals).
     const flip_capable = config.@"windows-flip-model" and
-        !std.process.hasEnvVarConstant("GHOSTTY_NO_FLIP") and
+        global.environ().getWindows(
+            std.unicode.utf8ToUtf16LeStringLiteral("GHOSTTY_NO_FLIP"),
+        ) == null and
         probeFlipCapable(hinstance);
     log.info("flip-model capable={}", .{flip_capable});
 
@@ -296,14 +299,14 @@ pub fn init(
     // opens a window only when conhost hands off a session, and must not
     // restore the user's whole session onto a bare console launch.
     if (!embedding) {
-        _ = core_app.mailbox.push(.{ .new_window = .{} }, .{ .forever = {} });
+        _ = core_app.mailbox.push(global.io(), .{ .new_window = .{} }, .{ .forever = {} });
     }
 
     self.* = .{
         .core_app = core_app,
         .config = config,
         .hinstance = hinstance,
-        .thread_id = std.os.windows.kernel32.GetCurrentThreadId(),
+        .thread_id = std.os.windows.GetCurrentThreadId(),
         .flip_capable = flip_capable,
         .com_initialized = com_initialized,
     };
@@ -346,12 +349,12 @@ fn launchedForEmbedding(alloc: std.mem.Allocator) bool {
 /// declines to conhost (we must NOT close it here — no double-free).
 fn onHandoff(h: defterm.Handoff) bool {
     const app = handoff_app orelse return false;
-    app.handoff_mutex.lock();
+    app.handoff_mutex.lockUncancelable(global.io());
     app.pending_handoffs.append(app.core_app.alloc, h) catch {
-        app.handoff_mutex.unlock();
+        app.handoff_mutex.unlock(global.io());
         return false;
     };
-    app.handoff_mutex.unlock();
+    app.handoff_mutex.unlock(global.io());
 
     // Wake the run loop so it drains the queue promptly. If the call
     // arrived on the UI thread (the STA case) the loop is currently
@@ -366,13 +369,13 @@ fn onHandoff(h: defterm.Handoff) bool {
 /// S_OK to conhost.
 fn drainHandoffs(self: *App) void {
     while (true) {
-        self.handoff_mutex.lock();
+        self.handoff_mutex.lockUncancelable(global.io());
         if (self.pending_handoffs.items.len == 0) {
-            self.handoff_mutex.unlock();
+            self.handoff_mutex.unlock(global.io());
             return;
         }
         const h = self.pending_handoffs.orderedRemove(0);
-        self.handoff_mutex.unlock();
+        self.handoff_mutex.unlock(global.io());
         self.receiveHandoff(h) catch |err| {
             log.err("handoff surface creation failed err={}", .{err});
         };
@@ -761,7 +764,7 @@ pub fn run(self: *App) !void {
             if (delay_ns == 0) return;
 
             const delay_ms: i64 = @intCast(@max(1, delay_ns / std.time.ns_per_ms));
-            const now = std.time.milliTimestamp();
+            const now = std.Io.Timestamp.now(global.io(), .awake).toMilliseconds();
             if (self.quit_deadline_ms) |deadline| {
                 if (now >= deadline) return;
             } else {

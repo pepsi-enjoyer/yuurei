@@ -137,6 +137,11 @@ pub const exp = struct {
         pub extern "kernel32" fn ClosePseudoConsole(hPC: HPCON) callconv(.winapi) void;
         // Fork (yuurei) additions: console attach, DLL load, path search,
         // file unblock — used by the Windows port helpers below.
+        // Zig 0.16 removed std.os.windows.kernel32.GetProcAddress too.
+        pub extern "kernel32" fn GetProcAddress(
+            hModule: windows.HMODULE,
+            lpProcName: [*:0]const u8,
+        ) callconv(.winapi) ?windows.FARPROC;
         pub extern "kernel32" fn GetConsoleWindow() callconv(.winapi) ?windows.HWND;
         pub extern "kernel32" fn DeleteFileW(
             lpFileName: [*:0]const u16,
@@ -264,6 +269,13 @@ pub const exp = struct {
             lpNumberOfBytesRead: ?*DWORD,
             lpOverlapped: ?*OVERLAPPED,
         ) callconv(.winapi) BOOL;
+        pub extern "kernel32" fn WriteFile(
+            hFile: HANDLE,
+            lpBuffer: [*]const u8,
+            nNumberOfBytesToWrite: DWORD,
+            lpNumberOfBytesWritten: ?*DWORD,
+            lpOverlapped: ?*OVERLAPPED,
+        ) callconv(.winapi) BOOL;
     };
     pub const ntdll = struct {
         pub extern "ntdll" fn NtCreateFile(
@@ -337,13 +349,13 @@ pub extern "kernel32" fn GetProcessTimes(HANDLE, *FILETIME, *FILETIME, *FILETIME
 /// A process's creation time as a raw 100ns tick count, or null if it
 /// can't be opened/queried.
 fn processCreationTime(pid: DWORD) ?u64 {
-    const h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, windows.FALSE, pid) orelse return null;
+    const h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) orelse return null;
     defer CloseHandle(h);
     var creation: FILETIME = .{};
     var exit_t: FILETIME = .{};
     var kernel_t: FILETIME = .{};
     var user_t: FILETIME = .{};
-    if (GetProcessTimes(h, &creation, &exit_t, &kernel_t, &user_t) == 0) return null;
+    if (GetProcessTimes(h, &creation, &exit_t, &kernel_t, &user_t) == FALSE) return null;
     return (@as(u64, creation.dwHighDateTime) << 32) | creation.dwLowDateTime;
 }
 
@@ -376,27 +388,27 @@ pub fn hasChildProcesses(root_pid: DWORD) bool {
     // (that child wsl.exe is a real interactive session and must block a
     // silent close).
     var entry: PROCESSENTRY32W = .{};
-    if (Process32FirstW(snap, &entry) == 0) return false;
+    if (Process32FirstW(snap, &entry) == FALSE) return false;
     var root_is_wsl = false;
     while (true) {
         if (entry.th32ProcessID == root_pid) {
             root_is_wsl = exeNameIs(&entry.szExeFile, "wsl.exe");
             break;
         }
-        if (Process32NextW(snap, &entry) == 0) break;
+        if (Process32NextW(snap, &entry) == FALSE) break;
     }
 
     // Second pass: any non-infrastructure child means work in progress.
     // Guard against PID reuse (a recycled root_pid attracting an unrelated
     // orphan) by rejecting any "child" created before root.
     const root_created = processCreationTime(root_pid);
-    if (Process32FirstW(snap, &entry) == 0) return false;
+    if (Process32FirstW(snap, &entry) == FALSE) return false;
     while (true) {
         if (entry.th32ParentProcessID == root_pid and
             entry.th32ProcessID != root_pid and
             !infrastructureProcess(&entry.szExeFile, root_is_wsl) and
             !pidReused(root_created, entry.th32ProcessID)) return true;
-        if (Process32NextW(snap, &entry) == 0) return false;
+        if (Process32NextW(snap, &entry) == FALSE) return false;
     }
 }
 
@@ -508,11 +520,11 @@ pub const conpty = struct {
         hOutput: windows.HANDLE,
         dwFlags: windows.DWORD,
         phPC: *HPCON,
-    ) callconv(.winapi) windows.HRESULT;
+    ) callconv(.winapi) HRESULT;
     const ResizeFn = *const fn (
         hPC: HPCON,
         size: windows.COORD,
-    ) callconv(.winapi) windows.HRESULT;
+    ) callconv(.winapi) HRESULT;
     const CloseFn = *const fn (hPC: HPCON) callconv(.winapi) void;
     // Adopt a ConPTY handed to us by conhost (default-terminal handoff):
     // packs the handed-off server/reference/signal handles into a real
@@ -524,7 +536,7 @@ pub const conpty = struct {
         hRef: windows.HANDLE,
         hSignal: windows.HANDLE,
         phPC: *HPCON,
-    ) callconv(.winapi) windows.HRESULT;
+    ) callconv(.winapi) HRESULT;
     // Reparent a (packed) ConPTY's pseudo-window to a real terminal
     // window. Microsoft's handoff receiver does this after packing so the
     // ConPTY is bound to the terminal HWND; also the step that appears to
@@ -532,14 +544,19 @@ pub const conpty = struct {
     const ReparentFn = *const fn (
         hPC: HPCON,
         hwnd: windows.HWND,
-    ) callconv(.winapi) windows.HRESULT;
+    ) callconv(.winapi) HRESULT;
 
     var create_fn: CreateFn = undefined;
     var resize_fn: ResizeFn = undefined;
     var close_fn: CloseFn = undefined;
     var pack_fn: ?PackFn = null;
     var reparent_fn: ?ReparentFn = null;
-    var once = std.once(resolve);
+    var resolved: bool = false;
+    fn ensureResolved() void {
+        if (@atomicLoad(bool, &resolved, .acquire)) return;
+        resolve();
+        @atomicStore(bool, &resolved, true, .release);
+    }
 
     fn resolve() void {
         vendored: {
@@ -548,15 +565,15 @@ pub const conpty = struct {
                 null,
                 exp.LOAD_LIBRARY_SEARCH_APPLICATION_DIR,
             ) orelse break :vendored;
-            const create = windows.kernel32.GetProcAddress(
+            const create = exp.kernel32.GetProcAddress(
                 module,
                 "CreatePseudoConsole",
             ) orelse break :vendored;
-            const resize = windows.kernel32.GetProcAddress(
+            const resize = exp.kernel32.GetProcAddress(
                 module,
                 "ResizePseudoConsole",
             ) orelse break :vendored;
-            const close = windows.kernel32.GetProcAddress(
+            const close = exp.kernel32.GetProcAddress(
                 module,
                 "ClosePseudoConsole",
             ) orelse break :vendored;
@@ -566,10 +583,10 @@ pub const conpty = struct {
             close_fn = @ptrCast(close);
             // Optional: only present in the vendored OpenConsole DLL, used
             // for default-terminal handoff adoption.
-            if (windows.kernel32.GetProcAddress(module, "ConptyPackPseudoConsole")) |pack| {
+            if (exp.kernel32.GetProcAddress(module, "ConptyPackPseudoConsole")) |pack| {
                 pack_fn = @ptrCast(pack);
             }
-            if (windows.kernel32.GetProcAddress(module, "ConptyReparentPseudoConsole")) |reparent| {
+            if (exp.kernel32.GetProcAddress(module, "ConptyReparentPseudoConsole")) |reparent| {
                 reparent_fn = @ptrCast(reparent);
             }
             log.info("using vendored conpty.dll", .{});
@@ -588,21 +605,21 @@ pub const conpty = struct {
         hOutput: windows.HANDLE,
         dwFlags: windows.DWORD,
         phPC: *HPCON,
-    ) windows.HRESULT {
-        once.call();
+    ) HRESULT {
+        ensureResolved();
         return create_fn(size, hInput, hOutput, dwFlags, phPC);
     }
 
     pub fn resizePseudoConsole(
         hPC: HPCON,
         size: windows.COORD,
-    ) windows.HRESULT {
-        once.call();
+    ) HRESULT {
+        ensureResolved();
         return resize_fn(hPC, size);
     }
 
     pub fn closePseudoConsole(hPC: HPCON) void {
-        once.call();
+        ensureResolved();
         close_fn(hPC);
     }
 
@@ -616,8 +633,8 @@ pub const conpty = struct {
         hRef: windows.HANDLE,
         hSignal: windows.HANDLE,
         phPC: *HPCON,
-    ) error{Unsupported}!windows.HRESULT {
-        once.call();
+    ) error{Unsupported}!HRESULT {
+        ensureResolved();
         const f = pack_fn orelse return error.Unsupported;
         return f(hServerProcess, hRef, hSignal, phPC);
     }
@@ -627,8 +644,8 @@ pub const conpty = struct {
     pub fn reparentPseudoConsole(
         hPC: HPCON,
         hwnd: windows.HWND,
-    ) error{Unsupported}!windows.HRESULT {
-        once.call();
+    ) error{Unsupported}!HRESULT {
+        ensureResolved();
         const f = reparent_fn orelse return error.Unsupported;
         return f(hPC, hwnd);
     }

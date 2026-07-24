@@ -5,6 +5,7 @@
 const Window = @This();
 
 const std = @import("std");
+const global = @import("../../global.zig");
 const Allocator = std.mem.Allocator;
 const apprt = @import("../../apprt.zig");
 const input = @import("../../input.zig");
@@ -749,7 +750,7 @@ fn openProfileMenu(self: *Window) void {
     if (self.profile_menu != null) return;
     // The click that just dismissed the menu (see profile_menu_closed_ms)
     // must not reopen it: that's the close half of the toggle.
-    if (std.time.milliTimestamp() - self.profile_menu_closed_ms < 250) return;
+    if (std.Io.Timestamp.now(global.io(), .awake).toMilliseconds() - self.profile_menu_closed_ms < 250) return;
     const rect = self.newTabRect();
     var pt: winapi.POINT = .{ .x = rect.left, .y = rect.bottom };
     _ = winapi.ClientToScreen(self.hwnd, &pt);
@@ -2939,7 +2940,7 @@ pub fn wndProc(
             // each layout runs a full per-split resize pipeline, so
             // coalesce to ~60Hz (WM_EXITSIZEMOVE does a final layout).
             if (self.in_size_move) {
-                const now = std.time.milliTimestamp();
+                const now = std.Io.Timestamp.now(global.io(), .awake).toMilliseconds();
                 if (now - self.divider_layout_ms < 16) return 0;
                 self.divider_layout_ms = now;
             }
@@ -3329,7 +3330,7 @@ pub fn wndProc(
                     drag.handle,
                     @floatCast(std.math.clamp(ratio, 0.05, 0.95)),
                 );
-                const now = std.time.milliTimestamp();
+                const now = std.Io.Timestamp.now(global.io(), .awake).toMilliseconds();
                 if (now - self.divider_layout_ms >= 16) {
                     self.divider_layout_ms = now;
                     self.layoutActiveTab();

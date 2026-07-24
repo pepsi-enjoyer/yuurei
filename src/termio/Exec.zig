@@ -142,8 +142,8 @@ pub fn threadEnter(
     // Create our pipe that we'll use to kill our read thread.
     // pipe[0] is the read end, pipe[1] is the write end.
     const pipe = try internal_os.pipe();
-    errdefer _ = posix.system.close(pipe[0]);
-    errdefer _ = posix.system.close(pipe[1]);
+    errdefer internal_os.pipeClose(pipe[0]);
+    errdefer internal_os.pipeClose(pipe[1]);
 
     // Setup our stream so that we can write.
     var stream = xev.Stream.initFd(pty_fds.write);
@@ -231,18 +231,11 @@ pub fn threadExit(self: *Exec, td: *termio.Termio.ThreadData) void {
     // Quit our read thread after exiting the subprocess so that
     // we don't get stuck waiting for data to stop flowing if it is
     // a particularly noisy process.
-    switch (posix.errno(posix.system.write(exec.read_thread_pipe, "x", 1))) {
-        .SUCCESS => {},
-
-        // EPIPE means that our read thread is closed already, which is
-        // completely fine since that is what we were trying to achieve.
-        .PIPE => {},
-
-        else => |e| log.warn(
-            "error writing to read thread quit pipe err=E{s}",
-            .{@tagName(e)},
-        ),
-    }
+    // Wake the read thread via its self-pipe. pipeWake handles the
+    // Windows-HANDLE vs POSIX-fd split (0.16 removed std.posix.close/write,
+    // and the raw syscall references a libc `write` MSVC lacks) and
+    // swallows a broken/closed reader — exactly the state a quit-wake races.
+    _ = internal_os.pipeWake(exec.read_thread_pipe, 'x');
 
     if (comptime builtin.os.tag == .windows) {
         // Interrupt the blocking read so the thread can see the quit message
@@ -566,7 +559,7 @@ pub const ThreadData = struct {
     termios_mode: ptypkg.Mode = .{},
 
     pub fn deinit(self: *ThreadData, alloc: Allocator) void {
-        _ = posix.system.close(self.read_thread_pipe);
+        internal_os.pipeClose(self.read_thread_pipe);
 
         // Clear our write pools. We know we aren't ever going to do
         // any more IO since we stop our data stream below so we can just
@@ -596,7 +589,7 @@ pub const ThreadData = struct {
 pub const HandoffHandles = struct {
     our_read: windows.HANDLE,
     our_write: windows.HANDLE,
-    hpc: windows.exp.HPCON,
+    hpc: windows.HPCON,
     client: ?windows.HANDLE,
 };
 
@@ -1564,7 +1557,7 @@ pub const ReadThread = struct {
         _ = handoff; // handoff exit detection is win32-only
 
         // Always close our end of the pipe when we exit.
-        defer _ = posix.system.close(quit);
+        defer internal_os.pipeClose(quit);
 
         // Right now, on Darwin, `std.Thread.setName` can only name the current
         // thread, and we have no way to get the current thread from within it,
@@ -1662,7 +1655,7 @@ pub const ReadThread = struct {
                 // delivers what it has instead of sleeping out the
                 // timeout while we sit idle.
                 if (wake) {
-                    _ = posix.system.write(pipeline.idle_write_fd, "i", 1);
+                    _ = internal_os.pipeWake(pipeline.idle_write_fd, 'i');
                 }
             }
 
@@ -1930,7 +1923,7 @@ pub const ReadThread = struct {
 
     fn threadMainWindows(fd: posix.fd_t, io: *termio.Termio, quit: posix.fd_t, handoff: bool) void {
         // Always close our end of the pipe when we exit.
-        defer _ = posix.system.close(quit);
+        defer internal_os.pipeClose(quit);
 
         // Setup our crash metadata
         crash.sentry.thread_state = .{
@@ -1994,14 +1987,14 @@ pub const ReadThread = struct {
                 }
 
                 if (tracing) {
-                    const t0 = std.time.nanoTimestamp();
+                    const t0 = std.Io.Timestamp.now(global.io(), .awake).toNanoseconds();
                     if (stat_start == 0) stat_start = t0;
                     if (perf.sinceKeyMs()) |ms| {
                         log.info("perf: ptychunk key+{d}ms {d}B", .{ ms, n });
                     }
                     @call(.always_inline, termio.Termio.processOutput, .{ io, buf[0..n] });
                     perf.ptyData();
-                    const t1 = std.time.nanoTimestamp();
+                    const t1 = std.Io.Timestamp.now(global.io(), .awake).toNanoseconds();
                     stat_parse_ns += @intCast(t1 - t0);
                     stat_bytes += n;
                     stat_chunks += 1;

@@ -18,16 +18,31 @@ pub const HBRUSH = windows.HBRUSH;
 pub const HMENU = windows.HMENU;
 pub const HANDLE = windows.HANDLE;
 pub const HMODULE = windows.HMODULE;
-pub const WPARAM = windows.WPARAM;
+// Zig 0.16 stripped these Windows types from std.os.windows; define them
+// locally. WPARAM/LRESULT/HRESULT are the standard pointer/long-sized
+// integer aliases; RECT/POINT are the canonical Win32 layouts.
+pub const WPARAM = usize;
 pub const LPARAM = windows.LPARAM;
-pub const LRESULT = windows.LRESULT;
-pub const BOOL = windows.BOOL;
+pub const LRESULT = isize;
+// Zig 0.16 made std.os.windows.BOOL a typed Bool(c_int) that no longer
+// compares against integer literals. Win32 BOOL is ABI-identical to
+// c_int, so use c_int here to keep the port's integer-style checks
+// (`== 0` / `!= 0`, FALSE/TRUE below).
+pub const BOOL = c_int;
 pub const DWORD = windows.DWORD;
-pub const HRESULT = windows.HRESULT;
+pub const HRESULT = c_long;
 pub const UINT = windows.UINT;
 pub const ATOM = windows.ATOM;
-pub const RECT = windows.RECT;
-pub const POINT = windows.POINT;
+pub const RECT = extern struct {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+};
+pub const POINT = extern struct {
+    x: i32,
+    y: i32,
+};
 
 pub const HGLRC = *opaque {};
 
@@ -106,8 +121,8 @@ pub const WS_CAPTION: DWORD = 0x00C00000;
 
 pub extern "user32" fn GetWindowRect(HWND, *RECT) callconv(.winapi) BOOL;
 pub const CW_USEDEFAULT: i32 = @bitCast(@as(u32, 0x80000000));
-pub const FALSE = std.os.windows.FALSE;
-pub const TRUE = std.os.windows.TRUE;
+pub const FALSE: BOOL = 0;
+pub const TRUE: BOOL = 1;
 
 // Class styles
 pub const CS_HREDRAW: UINT = 0x0002;
@@ -481,6 +496,11 @@ pub extern "user32" fn SetClipboardData(UINT, HANDLE) callconv(.winapi) ?HANDLE;
 pub extern "kernel32" fn WaitForSingleObject(HANDLE, DWORD) callconv(.winapi) DWORD;
 pub extern "kernel32" fn GetExitCodeProcess(HANDLE, *DWORD) callconv(.winapi) BOOL;
 pub extern "kernel32" fn CloseHandle(HANDLE) callconv(.winapi) BOOL;
+// Zig 0.16 removed std.os.windows.kernel32.GetModuleHandleW; declare it
+// here. Returns std's HMODULE so it feeds std GetProcAddress directly.
+pub extern "kernel32" fn GetModuleHandleW(?[*:0]const u16) callconv(.winapi) ?std.os.windows.HMODULE;
+// Zig 0.16 also removed std.os.windows.kernel32.GetProcAddress.
+pub extern "kernel32" fn GetProcAddress(std.os.windows.HMODULE, [*:0]const u8) callconv(.winapi) ?std.os.windows.FARPROC;
 pub const INFINITE: DWORD = 0xFFFFFFFF;
 
 // Minimal process/pipe surface for capturing a child's stdout without
@@ -1076,9 +1096,9 @@ pub fn glGetProcAddress(name: [*:0]const u8) callconv(.c) ?GlProc {
         if (v > 3 and v != @as(usize, @bitCast(@as(isize, -1)))) return proc;
     }
 
-    const module = std.os.windows.kernel32.GetModuleHandleW(
+    const module = GetModuleHandleW(
         std.unicode.utf8ToUtf16LeStringLiteral("opengl32.dll"),
     ) orelse return null;
-    const farproc = std.os.windows.kernel32.GetProcAddress(module, name) orelse return null;
+    const farproc = GetProcAddress(module, name) orelse return null;
     return @ptrCast(farproc);
 }

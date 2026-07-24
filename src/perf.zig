@@ -5,6 +5,7 @@
 //! when disabled. This is intentionally minimal plumbing for measuring
 //! the port on real machines — not a general profiling framework.
 const std = @import("std");
+const global = @import("global.zig");
 const builtin = @import("builtin");
 
 /// Nanosecond timestamp of the most recent key press. Consumed by the
@@ -31,7 +32,7 @@ pub fn isEnabled() bool {
     const e = read: {
         if (comptime builtin.os.tag == .windows) {
             const key = std.unicode.utf8ToUtf16LeStringLiteral("GHOSTTY_PERF_TRACE");
-            const value = std.process.getenvW(key) orelse break :read false;
+            const value = global.environ().getWindows(key) orelse break :read false;
             if (value.len == 0) break :read false;
             if (value.len == 1 and value[0] == '0') break :read false;
             break :read true;
@@ -47,7 +48,7 @@ pub fn isEnabled() bool {
 pub fn keyPress() void {
     if (!isEnabled()) return;
     echo_seen.store(false, .monotonic);
-    const now: i64 = @intCast(std.time.nanoTimestamp());
+    const now: i64 = @intCast(std.Io.Timestamp.now(global.io(), .awake).toNanoseconds());
     key_press_ns.store(now, .monotonic);
     last_key_ns.store(now, .monotonic);
 }
@@ -69,7 +70,7 @@ pub fn sinceKeyMs() ?i64 {
     if (!isEnabled()) return null;
     const t = last_key_ns.load(.monotonic);
     if (t == 0) return null;
-    const now: i64 = @intCast(std.time.nanoTimestamp());
+    const now: i64 = @intCast(std.Io.Timestamp.now(global.io(), .awake).toNanoseconds());
     const ms = @divTrunc(now - t, std.time.ns_per_ms);
     if (ms > 2000) return null;
     return ms;
@@ -83,6 +84,6 @@ pub fn keyToPresent() ?u64 {
     const t = key_press_ns.swap(0, .monotonic);
     if (t == 0) return null;
     echo_seen.store(false, .monotonic);
-    const now: i64 = @intCast(std.time.nanoTimestamp());
+    const now: i64 = @intCast(std.Io.Timestamp.now(global.io(), .awake).toNanoseconds());
     return @intCast(@max(0, now - t));
 }

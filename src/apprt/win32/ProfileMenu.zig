@@ -6,6 +6,7 @@
 const ProfileMenu = @This();
 
 const std = @import("std");
+const global = @import("../../global.zig");
 const Allocator = std.mem.Allocator;
 const winapi = @import("winapi.zig");
 const profiles = @import("profiles.zig");
@@ -108,7 +109,7 @@ pub fn create(
 pub fn destroy(self: *ProfileMenu) void {
     const alloc = self.window.app.core_app.alloc;
     self.window.profile_menu = null;
-    self.window.profile_menu_closed_ms = std.time.milliTimestamp();
+    self.window.profile_menu_closed_ms = std.Io.Timestamp.now(global.io(), .awake).toMilliseconds();
     if (self.font_name) |f| _ = winapi.DeleteObject(f);
     if (self.font_hint) |f| _ = winapi.DeleteObject(f);
     _ = winapi.SetWindowLongPtrW(self.hwnd, winapi.GWLP_USERDATA, 0);

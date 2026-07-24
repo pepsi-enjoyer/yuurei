@@ -22,7 +22,7 @@ const builtin = @import("builtin");
 const winapi = @import("winapi.zig");
 const internal_os = @import("../../os/main.zig");
 const conpty = internal_os.windows.conpty;
-const HPCON = internal_os.windows.exp.HPCON;
+const HPCON = internal_os.windows.HPCON;
 
 const log = std.log.scoped(.win32);
 

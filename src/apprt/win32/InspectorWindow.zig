@@ -4,6 +4,7 @@
 const InspectorWindow = @This();
 
 const std = @import("std");
+const global = @import("../../global.zig");
 const Allocator = std.mem.Allocator;
 const cimgui = @import("dcimgui");
 const gl = @import("opengl");
@@ -33,7 +34,7 @@ gl_context: winapi.HGLRC,
 ig_context: *cimgui.c.ImGuiContext,
 
 /// Previous frame instant for ImGui's DeltaTime.
-instant: ?std.time.Instant = null,
+instant: ?std.Io.Timestamp = null,
 
 pub fn create(alloc: Allocator, surface: *Surface) !*InspectorWindow {
     const app = surface.app;
@@ -174,9 +175,9 @@ fn render(self: *InspectorWindow) void {
     for (0..2) |_| {
         cimgui.ImGui_ImplOpenGL3_NewFrame();
 
-        const now = std.time.Instant.now() catch unreachable;
+        const now: std.Io.Timestamp = .now(global.io(), .awake);
         io.DeltaTime = if (self.instant) |prev| delta: {
-            const since_ns: f64 = @floatFromInt(now.since(prev));
+            const since_ns: f64 = @floatFromInt(prev.durationTo(now).toNanoseconds());
             const ns_per_s: f64 = @floatFromInt(std.time.ns_per_s);
             break :delta @max(0.00001, @as(f32, @floatCast(since_ns / ns_per_s)));
         } else (1.0 / 60.0);

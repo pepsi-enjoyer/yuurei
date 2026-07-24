@@ -2,6 +2,7 @@
 pub const OpenGL = @This();
 
 const std = @import("std");
+const global = @import("../global.zig");
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
 const gl = @import("opengl");
@@ -314,7 +315,7 @@ fn initPresenter(surface: *apprt.Surface) bool {
     const winapi = apprt.win32.winapi;
 
     // Escape hatch for benchmarking and driver-issue workarounds.
-    if (std.process.hasEnvVarConstant("GHOSTTY_NO_FLIP")) return false;
+    if (global.environ().getWindows(std.unicode.utf8ToUtf16LeStringLiteral("GHOSTTY_NO_FLIP")) != null) return false;
 
     var client: winapi.RECT = undefined;
     if (winapi.GetClientRect(surface.host, &client) == 0) return false;

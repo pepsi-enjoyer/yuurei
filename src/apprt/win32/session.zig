@@ -14,6 +14,7 @@
 //!   active\t<idx>
 
 const std = @import("std");
+const global = @import("../../global.zig");
 const App = @import("App.zig");
 const Window = @import("Window.zig");
 const Surface = @import("Surface.zig");
@@ -24,7 +25,7 @@ const header = "yuurei-session 1";
 const max_file_size = 64 * 1024;
 
 fn sessionPath(alloc: std.mem.Allocator) ?[]const u8 {
-    const base = std.process.getEnvVarOwned(alloc, "LOCALAPPDATA") catch return null;
+    const base = global.environ().getAlloc(alloc, "LOCALAPPDATA") catch return null;
     defer alloc.free(base);
     return std.fs.path.join(alloc, &.{ base, "ghostty", "session" }) catch null;
 }
@@ -88,23 +89,28 @@ pub fn save(app: *App) void {
 /// it over the target. A crash or power loss mid-write then leaves the
 /// previous good file intact rather than a truncated/empty one.
 fn writeAtomic(alloc: std.mem.Allocator, path: []const u8, data: []const u8) void {
-    // The parent (%LOCALAPPDATA%\ghostty) may not exist yet.
-    if (std.fs.path.dirname(path)) |dir| std.fs.makeDirAbsolute(dir) catch {};
+    const io = global.io();
+    // The parent (%LOCALAPPDATA%\ghostty) may not exist yet. createDirPath
+    // is idempotent (mkdir -p), so an already-present dir is fine.
+    if (std.fs.path.dirname(path)) |dir| std.Io.Dir.cwd().createDirPath(io, dir) catch {};
 
     const tmp = std.fmt.allocPrint(alloc, "{s}.tmp", .{path}) catch return;
     defer alloc.free(tmp);
 
     write: {
-        const file = std.fs.createFileAbsolute(tmp, .{ .truncate = true }) catch break :write;
-        defer file.close();
-        file.writeAll(data) catch break :write;
+        const file = std.Io.Dir.createFileAbsolute(io, tmp, .{ .truncate = true }) catch break :write;
+        defer file.close(io);
+        var wbuf: [4096]u8 = undefined;
+        var fw = file.writer(io, &wbuf);
+        fw.interface.writeAll(data) catch break :write;
+        fw.interface.flush() catch break :write;
         // Rename over the target (atomic replace on NTFS). Only on a
         // fully-written temp do we touch the real file.
-        std.fs.renameAbsolute(tmp, path) catch break :write;
+        std.Io.Dir.renameAbsolute(tmp, path, io) catch break :write;
         return;
     }
     // Something failed; don't leave a stray temp or the stale target.
-    std.fs.deleteFileAbsolute(tmp) catch {};
+    std.Io.Dir.deleteFileAbsolute(io, tmp) catch {};
 }
 
 /// Restore the recorded session, returning the surface of the last
@@ -117,12 +123,12 @@ pub fn restore(app: *App) ?*Surface {
     const path = sessionPath(alloc) orelse return null;
     defer alloc.free(path);
 
-    const data = std.fs.cwd().readFileAlloc(alloc, path, max_file_size) catch
+    const data = std.Io.Dir.cwd().readFileAlloc(global.io(), path, alloc, .limited(max_file_size)) catch
         return null;
     defer alloc.free(data);
 
     var lines = std.mem.splitScalar(u8, data, '\n');
-    if (!std.mem.eql(u8, std.mem.trimRight(u8, lines.next() orelse "", "\r"), header))
+    if (!std.mem.eql(u8, std.mem.trimEnd(u8, lines.next() orelse "", "\r"), header))
         return null;
 
     var result: ?*Surface = null;
@@ -130,7 +136,7 @@ pub fn restore(app: *App) ?*Surface {
     const profile_list = app.ensureProfiles();
 
     while (lines.next()) |line_raw| {
-        const line = std.mem.trimRight(u8, line_raw, "\r");
+        const line = std.mem.trimEnd(u8, line_raw, "\r");
         if (line.len == 0) continue;
         var fields = std.mem.splitScalar(u8, line, '\t');
         const kind = fields.next() orelse continue;

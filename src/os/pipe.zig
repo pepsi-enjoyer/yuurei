@@ -20,3 +20,32 @@ pub fn pipe() ![2]posix.fd_t {
         },
     }
 }
+
+/// Close one end of a `pipe()` fd. Cross-platform: on Windows the fd is a
+/// real HANDLE (CloseHandle); on POSIX it is a descriptor. Zig 0.16 removed
+/// the high-level `std.posix.close`, and the raw `posix.system.close`
+/// references a libc `close` the MSVC target doesn't export — hence the
+/// split.
+pub fn close(fd: posix.fd_t) void {
+    switch (builtin.os.tag) {
+        .windows => windows.CloseHandle(fd),
+        else => compat_fd.close(fd),
+    }
+}
+
+/// Write a wake byte to a `pipe()` write end (the self-pipe trick). Errors
+/// are swallowed: a broken/closed reader is exactly the state a wake is
+/// racing against. Returns whether the byte was written.
+pub fn wake(fd: posix.fd_t, byte: u8) bool {
+    switch (builtin.os.tag) {
+        .windows => {
+            var written: windows.DWORD = 0;
+            const buf = [_]u8{byte};
+            return windows.exp.kernel32.WriteFile(fd, &buf, 1, &written, null) != windows.FALSE;
+        },
+        else => {
+            const buf = [_]u8{byte};
+            return posix.errno(posix.system.write(fd, &buf, 1)) == .SUCCESS;
+        },
+    }
+}
