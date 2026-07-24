@@ -151,6 +151,9 @@ pub const exp = struct {
             hFile: ?windows.HANDLE,
             dwFlags: windows.DWORD,
         ) callconv(.winapi) ?windows.HMODULE;
+        pub extern "kernel32" fn FreeLibrary(
+            hLibModule: windows.HMODULE,
+        ) callconv(.winapi) windows.BOOL;
         pub extern "kernel32" fn AttachConsole(
             dwProcessId: windows.DWORD,
         ) callconv(.winapi) windows.BOOL;
@@ -551,11 +554,32 @@ pub const conpty = struct {
     var close_fn: CloseFn = undefined;
     var pack_fn: ?PackFn = null;
     var reparent_fn: ?ReparentFn = null;
-    var resolved: bool = false;
+    // One-time init, safe against concurrent first callers (renderer/io
+    // threads can race the first pty open). A plain "checked boolean"
+    // is not enough: two threads passing the check would both run
+    // resolve() and race on the non-atomic function-pointer globals.
+    // Losers of the claim spin until the winner publishes; resolution is
+    // a handful of LoadLibrary/GetProcAddress calls, so the wait is
+    // bounded and only ever paid once per process.
+    const ResolveState = enum(u8) { uninit, busy, done };
+    var resolve_state: std.atomic.Value(ResolveState) = .init(.uninit);
     fn ensureResolved() void {
-        if (@atomicLoad(bool, &resolved, .acquire)) return;
-        resolve();
-        @atomicStore(bool, &resolved, true, .release);
+        while (true) {
+            switch (resolve_state.load(.acquire)) {
+                .done => return,
+                .uninit => if (resolve_state.cmpxchgWeak(
+                    .uninit,
+                    .busy,
+                    .acquire,
+                    .monotonic,
+                ) == null) {
+                    resolve();
+                    resolve_state.store(.done, .release);
+                    return;
+                },
+                .busy => std.atomic.spinLoopHint(),
+            }
+        }
     }
 
     fn resolve() void {
@@ -565,18 +589,29 @@ pub const conpty = struct {
                 null,
                 exp.LOAD_LIBRARY_SEARCH_APPLICATION_DIR,
             ) orelse break :vendored;
+            // A conpty.dll missing a mandatory export is unusable:
+            // release it before falling back so the module doesn't leak.
             const create = exp.kernel32.GetProcAddress(
                 module,
                 "CreatePseudoConsole",
-            ) orelse break :vendored;
+            ) orelse {
+                _ = exp.kernel32.FreeLibrary(module);
+                break :vendored;
+            };
             const resize = exp.kernel32.GetProcAddress(
                 module,
                 "ResizePseudoConsole",
-            ) orelse break :vendored;
+            ) orelse {
+                _ = exp.kernel32.FreeLibrary(module);
+                break :vendored;
+            };
             const close = exp.kernel32.GetProcAddress(
                 module,
                 "ClosePseudoConsole",
-            ) orelse break :vendored;
+            ) orelse {
+                _ = exp.kernel32.FreeLibrary(module);
+                break :vendored;
+            };
 
             create_fn = @ptrCast(create);
             resize_fn = @ptrCast(resize);
