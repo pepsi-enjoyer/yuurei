@@ -172,15 +172,9 @@ fullscreen: bool = false,
 saved_placement: winapi.WINDOWPLACEMENT = undefined,
 saved_style: isize = 0,
 
-/// The key event from the last WM_KEYDOWN that the core did not
-/// consume; WM_CHAR completes it with the layout-cooked text.
-pending_key_event: ?input.KeyEvent = null,
-
-/// Buffer backing pending_key_event.utf8 across the KEYDOWN→CHAR pair.
+/// Buffer backing a delivered key event's utf8 text for the duration
+/// of the keyCallback (deliverKeyWithText).
 utf8_buf: [4]u8 = undefined,
-
-/// Pending high surrogate from WM_CHAR, awaiting its low half.
-high_surrogate: ?u16 = null,
 
 /// Whether the ctrl currently reported down by GetKeyState is the one
 /// Windows injects for AltGr (see keyEvent): while true, ctrl+alt are
@@ -3089,10 +3083,10 @@ pub fn wndProc(
                 // is Ctrl+Alt, so AltGr+Tab (or a click away) loses focus
                 // while it is "down", and the right-alt WM_KEYUP that
                 // clears it never arrives here, leaving ctrl+alt stripped
-                // from every subsequent chord. (high_surrogate is the same
-                // class: a WM_CHAR pair split by a focus switch.)
+                // from every subsequent chord. (Key text needs no reset:
+                // it is consumed synchronously at keydown dispatch, so
+                // there is no cross-message pairing state to go stale.)
                 self.altgr_down = false;
-                self.high_surrogate = null;
             }
 
             // Quick terminals hide when they lose focus — except to one
@@ -3686,7 +3680,7 @@ fn keyEvent(
         const i: usize = vk - '1';
         if (i >= list.items.len) break :profile;
         // Swallow the paired WM_CHAR too.
-        self.pending_key_event = null;
+        _ = self.takeQueuedChar();
         _ = self.newTabWithProfile(&list.items[i]) catch |err|
             log.err("profile shortcut err={}", .{err});
         return;
@@ -3717,134 +3711,109 @@ fn keyEvent(
     // A dead key: TranslateMessage queued WM_DEADCHAR, not WM_CHAR.
     // Report the keydown as composing -- the core then suppresses
     // encoding the raw key (the kitty protocol would otherwise leak a
-    // spurious key event to TUIs) -- and clear any stash so the
-    // eventually composed WM_CHAR completes the *next* keydown, not
-    // this one. The WM_DEADCHAR itself is consumed in the wndproc.
+    // spurious key event to TUIs). The WM_DEADCHAR itself is consumed
+    // in the wndproc; the eventually composed WM_CHAR is consumed
+    // synchronously by the keydown it completes (takeQueuedChar).
     if ((action == .press or action == .repeat) and self.deadCharQueued()) {
         var composing = key_event;
         composing.composing = true;
         _ = tab.core_surface.keyCallback(composing) catch |err| {
             log.err("error in key callback err={}", .{err});
         };
-        self.pending_key_event = null;
         return;
     }
 
-    // TranslateMessage has already queued the layout-cooked WM_CHAR(s)
-    // for character-producing keys behind this keydown. When that text is
-    // printable, defer to charEvent so the core sees a single event WITH
-    // text (and with Shift/AltGr marked consumed). Encoding the text-less
-    // keydown here would, under the Kitty keyboard protocol, emit a CSI-u
-    // "shift+key" sequence and consume the keydown -- swallowing the
-    // WM_CHAR -- so shifted text (capitals, symbols) never reaches apps
-    // that enable the protocol (e.g. the Copilot TUI). Control chars
-    // (ctrl+key) are left to the encoder via the unshifted codepoint, so
-    // we only defer when a printable char is waiting.
+    // TranslateMessage posts a keydown's WM_CHAR(s) *before* the
+    // keydown is dispatched, so any char queued right now belongs to
+    // THIS keydown -- consume it synchronously. (The old design
+    // deferred to the later WM_CHAR dispatch through a single stashed
+    // pending event; with several keydowns queued -- fast typing,
+    // autorepeat bursts -- keydown B's queue-peek would see keydown A's
+    // still-queued char, overwrite A's stash, and text got paired with
+    // the wrong keydown while A's event and B's text were dropped.)
     if ((action == .press or action == .repeat) and
-        vk != winapi.VK_PROCESSKEY and
-        self.printableCharQueued())
+        vk != winapi.VK_PROCESSKEY)
     {
-        self.pending_key_event = key_event;
-        return;
+        if (self.takeQueuedChar()) |codepoint| {
+            if (codepoint >= 0x20 and codepoint != 0x7F) {
+                // Printable: one event WITH text (Shift/AltGr folded in
+                // deliverKeyWithText). Encoding the text-less keydown
+                // instead would, under the Kitty keyboard protocol, emit
+                // a CSI-u "shift+key" sequence -- shifted text (capitals,
+                // symbols) then never reaches apps that enable the
+                // protocol (e.g. the Copilot TUI).
+                self.deliverKeyWithText(tab, key_event, codepoint);
+                return;
+            }
+
+            // Control char (ctrl+key or DEL): keep encoding from the
+            // keydown via the unshifted codepoint. If the core ignores
+            // the keydown, complete it with the control text -- the
+            // same second delivery the old deferred path made.
+            const effect = tab.core_surface.keyCallback(key_event) catch |err| {
+                log.err("error in key callback err={}", .{err});
+                return;
+            };
+            if (effect == .closed) return;
+            if (effect == .ignored)
+                self.deliverKeyWithText(tab, key_event, codepoint);
+            return;
+        }
     }
 
-    const effect = tab.core_surface.keyCallback(key_event) catch |err| {
+    _ = tab.core_surface.keyCallback(key_event) catch |err| {
         log.err("error in key callback err={}", .{err});
         return;
     };
-
-    if (effect == .closed) return;
-
-    // If unconsumed, stash so the queued WM_CHAR can complete it with
-    // text; consumed keydowns swallow their WM_CHAR via the null stash.
-    self.pending_key_event = null;
-    if (effect == .ignored and (action == .press or action == .repeat)) {
-        self.pending_key_event = key_event;
-    }
 }
 
-/// Whether the WM_KEYDOWN being handled is the left-ctrl press Windows
-/// injects for AltGr: the next queued key message is right-alt's
-/// keydown carrying the same timestamp. A genuine ctrl press has no
-/// such paired message.
-fn altGrInjectedCtrl(self: *Window) bool {
-    var msg: winapi.MSG = undefined;
-    if (winapi.PeekMessageW(
-        &msg,
-        self.hwnd,
-        winapi.WM_KEYFIRST,
-        winapi.WM_KEYLAST,
-        winapi.PM_NOREMOVE,
-    ) == 0) return false;
-    if (msg.message != winapi.WM_KEYDOWN and
-        msg.message != winapi.WM_SYSKEYDOWN) return false;
-    if (@as(u8, @truncate(msg.wParam)) != winapi.VK_MENU) return false;
-    if ((msg.lParam & (1 << 24)) == 0) return false;
-    return msg.time == @as(u32, @bitCast(winapi.GetMessageTime()));
-}
-
-/// Whether a dead-key WM_DEADCHAR is queued behind the keydown we're
-/// handling (TranslateMessage posts it before this dispatch).
-fn deadCharQueued(self: *Window) bool {
-    var msg: winapi.MSG = undefined;
-    if (winapi.PeekMessageW(
-        &msg,
-        self.hwnd,
-        winapi.WM_DEADCHAR,
-        winapi.WM_DEADCHAR,
-        winapi.PM_NOREMOVE,
-    ) != 0) return true;
-    return winapi.PeekMessageW(
-        &msg,
-        self.hwnd,
-        winapi.WM_SYSDEADCHAR,
-        winapi.WM_SYSDEADCHAR,
-        winapi.PM_NOREMOVE,
-    ) != 0;
-}
-
-/// Whether a printable WM_CHAR is sitting in the queue directly behind
-/// the keydown we're handling (TranslateMessage posts it before this
-/// dispatch). A UTF-16 surrogate lead counts as printable; control chars
-/// (< 0x20 and DEL) do not, so ctrl-combinations keep encoding from the
-/// keydown rather than deferring to text.
-fn printableCharQueued(self: *Window) bool {
+/// Remove this keydown's queued WM_CHAR(s) and return the codepoint,
+/// reassembling a UTF-16 surrogate pair (two WM_CHARs) when present.
+/// Null when no char is queued (non-character key) or on a malformed
+/// pair. Must only be called while handling the keydown's dispatch:
+/// that is what guarantees the queued chars are this keydown's.
+fn takeQueuedChar(self: *Window) ?u21 {
     var msg: winapi.MSG = undefined;
     if (winapi.PeekMessageW(
         &msg,
         self.hwnd,
         winapi.WM_CHAR,
         winapi.WM_CHAR,
-        winapi.PM_NOREMOVE,
-    ) == 0) return false;
+        winapi.PM_REMOVE,
+    ) == 0) return null;
     const unit: u16 = @truncate(msg.wParam);
-    return unit >= 0x20 and unit != 0x7F;
+
+    // Lead surrogate: the trail was posted by the same TranslateMessage
+    // call, directly behind it.
+    if (unit >= 0xD800 and unit <= 0xDBFF) {
+        if (winapi.PeekMessageW(
+            &msg,
+            self.hwnd,
+            winapi.WM_CHAR,
+            winapi.WM_CHAR,
+            winapi.PM_REMOVE,
+        ) == 0) return null;
+        const trail: u16 = @truncate(msg.wParam);
+        if (trail < 0xDC00 or trail > 0xDFFF) return null;
+        return 0x10000 +
+            (@as(u21, unit - 0xD800) << 10) +
+            (trail - 0xDC00);
+    }
+    // A bare trail surrogate is malformed; swallow it.
+    if (unit >= 0xDC00 and unit <= 0xDFFF) return null;
+    return unit;
 }
 
-fn charEvent(self: *Window, unit: u16) void {
-    const tab = self.activeSurface() orelse return;
-
-    // UTF-16 surrogate pair reassembly across two WM_CHAR messages.
-    const codepoint: u21 = codepoint: {
-        if (unit >= 0xD800 and unit <= 0xDBFF) {
-            self.high_surrogate = unit;
-            return;
-        }
-        if (unit >= 0xDC00 and unit <= 0xDFFF) {
-            const high = self.high_surrogate orelse return;
-            self.high_surrogate = null;
-            break :codepoint 0x10000 +
-                (@as(u21, high - 0xD800) << 10) +
-                (unit - 0xDC00);
-        }
-        self.high_surrogate = null;
-        break :codepoint unit;
-    };
-
-    // A consumed keydown means this char must be swallowed (the
-    // TranslateMessage trap).
-    var key_event = self.pending_key_event orelse return;
-    self.pending_key_event = null;
+/// Deliver a key event completed with its produced text, folding
+/// modifier consumption the way the text implies (Shift that changed
+/// the character, AltGr chords that produced it).
+fn deliverKeyWithText(
+    self: *Window,
+    tab: *Surface,
+    event: input.KeyEvent,
+    codepoint: u21,
+) void {
+    var key_event = event;
 
     const len = std.unicode.utf8Encode(codepoint, &self.utf8_buf) catch |err| {
         log.err("error encoding codepoint={} err={}", .{ codepoint, err });
@@ -3890,6 +3859,57 @@ fn charEvent(self: *Window, unit: u16) void {
     _ = tab.core_surface.keyCallback(key_event) catch |err| {
         log.err("error in key callback err={}", .{err});
     };
+}
+
+/// Whether the WM_KEYDOWN being handled is the left-ctrl press Windows
+/// injects for AltGr: the next queued key message is right-alt's
+/// keydown carrying the same timestamp. A genuine ctrl press has no
+/// such paired message.
+fn altGrInjectedCtrl(self: *Window) bool {
+    var msg: winapi.MSG = undefined;
+    if (winapi.PeekMessageW(
+        &msg,
+        self.hwnd,
+        winapi.WM_KEYFIRST,
+        winapi.WM_KEYLAST,
+        winapi.PM_NOREMOVE,
+    ) == 0) return false;
+    if (msg.message != winapi.WM_KEYDOWN and
+        msg.message != winapi.WM_SYSKEYDOWN) return false;
+    if (@as(u8, @truncate(msg.wParam)) != winapi.VK_MENU) return false;
+    if ((msg.lParam & (1 << 24)) == 0) return false;
+    return msg.time == @as(u32, @bitCast(winapi.GetMessageTime()));
+}
+
+/// Whether a dead-key WM_DEADCHAR is queued behind the keydown we're
+/// handling (TranslateMessage posts it before this dispatch).
+fn deadCharQueued(self: *Window) bool {
+    var msg: winapi.MSG = undefined;
+    if (winapi.PeekMessageW(
+        &msg,
+        self.hwnd,
+        winapi.WM_DEADCHAR,
+        winapi.WM_DEADCHAR,
+        winapi.PM_NOREMOVE,
+    ) != 0) return true;
+    return winapi.PeekMessageW(
+        &msg,
+        self.hwnd,
+        winapi.WM_SYSDEADCHAR,
+        winapi.WM_SYSDEADCHAR,
+        winapi.PM_NOREMOVE,
+    ) != 0;
+}
+
+/// A WM_CHAR that reached dispatch. Keydown-paired text is consumed
+/// synchronously inside keyEvent (takeQueuedChar), so a char getting
+/// this far has no owning keydown -- injected/synthesized text -- and
+/// is deliberately dropped (the TranslateMessage trap: accepting bare
+/// chars would double-deliver text for consumed keydowns on any path
+/// that misses the synchronous consume).
+fn charEvent(self: *Window, unit: u16) void {
+    _ = self;
+    _ = unit;
 }
 
 /// The system "lines/characters per wheel notch" setting, as a scroll
