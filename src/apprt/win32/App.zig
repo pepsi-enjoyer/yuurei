@@ -1515,9 +1515,14 @@ fn reloadConfig(
 
     // Profile overlay files may have changed; rescan on next use. An
     // open dropdown holds pointers into the old list's arena, so close
-    // it first.
+    // it first. An open command palette is the same class of hazard:
+    // its match rows are indices into the combined command+profile
+    // namespace of the OLD config/list — after the swap those indices
+    // can point past either collection (out-of-bounds paint) or land
+    // on a different row (executing the wrong entry).
     for (self.windows.items) |window| {
         if (window.profile_menu) |menu| menu.destroy();
+        if (window.palette) |palette| palette.destroy();
     }
     if (self.profiles_list) |*l| {
         l.deinit();
