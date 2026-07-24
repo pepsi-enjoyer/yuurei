@@ -1049,6 +1049,34 @@ pub fn setFloat(self: *Window, mode: apprt.action.FloatWindow) void {
     );
 }
 
+/// Begin an inline rename of the tab containing `surface`: the
+/// prompt_title apprt action (command palette "Change Tab Title" /
+/// the prompt-title keybinds). Surface and tab prompts are the same
+/// thing here — the tab label is the only user-editable title in the
+/// win32 chrome. No-op if the surface isn't in this window's tabs.
+pub fn promptTitle(self: *Window, surface: *const Surface) void {
+    const idx = self.tabOf(surface) orelse return;
+    self.startRenameTab(idx);
+}
+
+/// Set the custom title of the tab containing `surface` directly (the
+/// set_tab_title apprt action, e.g. the `set_tab_title:...` keybind).
+/// An empty title clears the custom label so the shell-reported title
+/// shows again — same semantics as committing an empty inline rename
+/// would have, and how the other apprts treat it.
+pub fn setTabTitle(self: *Window, surface: *const Surface, title: []const u8) void {
+    const idx = self.tabOf(surface) orelse return;
+    const alloc = self.app.core_app.alloc;
+    const tab = &self.tabs.items[idx];
+    if (tab.custom_title) |prev| alloc.free(prev);
+    tab.custom_title = if (title.len > 0)
+        alloc.dupe(u8, title) catch null
+    else
+        null;
+    self.invalidateStrip();
+    self.syncTitle();
+}
+
 /// The tab index containing the given surface, if any.
 fn tabOf(self: *const Window, surface: *const Surface) ?usize {
     for (self.tabs.items, 0..) |*tab, i| {

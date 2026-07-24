@@ -866,6 +866,42 @@ pub fn performAction(
             },
         },
 
+        // Command palette "Change Tab Title" / the prompt-title
+        // keybinds. Whether the prompt asks for the surface or tab
+        // title, it's the same thing here: the tab label is the only
+        // user-editable title in the win32 chrome.
+        .prompt_title => switch (target) {
+            .app => return false,
+            .surface => |surface| {
+                surface.rt_surface.window.promptTitle(surface.rt_surface);
+            },
+        },
+
+        // The `set_tab_title:...` keybind: set the custom tab label
+        // directly (empty clears back to the shell-reported title).
+        .set_tab_title => switch (target) {
+            .app => return false,
+            .surface => |surface| {
+                surface.rt_surface.window.setTabTitle(
+                    surface.rt_surface,
+                    value.title,
+                );
+            },
+        },
+
+        // Command palette "Copy Terminal Title to Clipboard".
+        .copy_title_to_clipboard => switch (target) {
+            .app => return false,
+            .surface => |surface| {
+                const title = surface.rt_surface.title_text orelse return false;
+                try surface.rt_surface.setClipboard(
+                    .standard,
+                    &.{.{ .mime = "text/plain", .data = title }},
+                    false,
+                );
+            },
+        },
+
         .close_all_windows => {
             if (!self.confirmQuit()) return true;
             for (self.windows.items) |window| window.should_close = true;
