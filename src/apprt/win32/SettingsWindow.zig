@@ -365,9 +365,12 @@ fn indexOf(values: []const []const u8, current: []const u8) ?usize {
 }
 
 fn configValue(text: []const u8, key: []const u8) ?[]const u8 {
-    // Return the LAST active occurrence, since that's the one the scalar
-    // parser treats as effective (and the one setValue edits). Returning
-    // the first would display a value that isn't active.
+    // Scalar keys: the LAST active occurrence is the effective one (the
+    // parser lets the last win, and it's the one setValue edits).
+    // Repeatable font-family accumulates an ordered fallback list whose
+    // FIRST entry is the primary font — display that, since it is what
+    // the user actually sees rendered (and what setValue replaces).
+    const want_first = std.mem.eql(u8, key, "font-family");
     var result: ?[]const u8 = null;
     var it = std.mem.splitScalar(u8, text, '\n');
     while (it.next()) |raw| {
@@ -377,6 +380,7 @@ fn configValue(text: []const u8, key: []const u8) ?[]const u8 {
         const k = std.mem.trim(u8, line[0..eq], " \t");
         if (!std.mem.eql(u8, k, key)) continue;
         result = std.mem.trim(u8, line[eq + 1 ..], " \t");
+        if (want_first) return result;
     }
     return result;
 }
@@ -407,9 +411,20 @@ fn setValue(self: *SettingsWindow, key: []const u8, value: []const u8) void {
     };
     defer if (text.len > 0) alloc.free(text);
 
-    // Pass 1: find the LAST active (non-comment) occurrence of the key.
-    // The scalar config parser lets the last one win, so replacing an
-    // earlier one would silently do nothing.
+    // Repeatable keys (font-family is the only one this UI edits)
+    // accumulate: every active occurrence appends to an ordered
+    // fallback list, and the FIRST entry is the primary font. A single
+    // last-occurrence replacement would leave earlier entries in place
+    // — "font-family=A" + "font-family=B", choose C, and the file says
+    // [A, C] with A still the primary while the UI reports C. For a
+    // single-select UI the honest edit is: replace the first
+    // occurrence, drop every other one.
+    const repeatable = std.mem.eql(u8, key, "font-family");
+
+    // Pass 1: find the occurrence to rewrite. Scalar keys: the LAST
+    // active one (the parser lets the last win, so replacing an earlier
+    // one would silently do nothing). Repeatable keys: the FIRST (it
+    // keeps the key's position in the file; the rest are dropped below).
     const isMatch = struct {
         fn f(raw: []const u8, k: []const u8) bool {
             const line = std.mem.trim(u8, raw, " \t\r");
@@ -419,12 +434,16 @@ fn setValue(self: *SettingsWindow, key: []const u8, value: []const u8) void {
         }
     }.f;
 
-    var last_match: ?usize = null;
+    var replace_at: ?usize = null;
     {
         var idx: usize = 0;
         var it = std.mem.splitScalar(u8, text, '\n');
         while (it.next()) |raw| : (idx += 1) {
-            if (isMatch(raw, key)) last_match = idx;
+            if (isMatch(raw, key)) {
+                if (repeatable) {
+                    if (replace_at == null) replace_at = idx;
+                } else replace_at = idx;
+            }
         }
     }
 
@@ -435,9 +454,13 @@ fn setValue(self: *SettingsWindow, key: []const u8, value: []const u8) void {
     var idx: usize = 0;
     var it = std.mem.splitScalar(u8, text, '\n');
     while (it.next()) |raw| : (idx += 1) {
+        const is_replace = replace_at != null and idx == replace_at.?;
+        // Repeatable: drop every other occurrence so exactly one entry
+        // remains and it is the primary.
+        if (repeatable and !is_replace and isMatch(raw, key)) continue;
         if (!first) out.append(alloc, '\n') catch return;
         first = false;
-        if (last_match != null and idx == last_match.?) {
+        if (is_replace) {
             out.appendSlice(alloc, key) catch return;
             out.appendSlice(alloc, " = ") catch return;
             out.appendSlice(alloc, value) catch return;
@@ -445,7 +468,7 @@ fn setValue(self: *SettingsWindow, key: []const u8, value: []const u8) void {
             out.appendSlice(alloc, raw) catch return;
         }
     }
-    if (last_match == null) {
+    if (replace_at == null) {
         if (out.items.len > 0 and out.items[out.items.len - 1] != '\n')
             out.append(alloc, '\n') catch return;
         out.appendSlice(alloc, key) catch return;
