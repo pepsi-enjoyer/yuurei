@@ -908,7 +908,7 @@ const Subprocess = struct {
         // We have to copy the cwd because there is no guarantee that
         // pointers in full_config remain valid.
         const cwd: ?[:0]u8 = if (cfg.working_directory) |cwd|
-            try alloc.dupeZ(u8, cwd)
+            try alloc.dupeZ(u8, trimTrailingSeparators(cwd))
         else
             null;
 
@@ -2274,6 +2274,46 @@ fn appendEnvAlways(
 /// not available on a particular platform.
 pub fn getProcessInfo(self: *Exec, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
     return self.subprocess.getProcessInfo(info);
+}
+
+/// Trim trailing path separators from a working directory. Nushell
+/// refuses to start when the inherited $env.PWD ends in a separator,
+/// unless the path is a bare root ("/", "C:\") — those must keep the
+/// separator, since "C:" alone is drive-relative, not absolute.
+fn trimTrailingSeparators(path: []const u8) []const u8 {
+    var p = path;
+    while (p.len > 1) {
+        const last = p[p.len - 1];
+        if (last != '/' and last != '\\') break;
+        // A separator directly after ':' terminates a drive root
+        // ("C:\", "\\?\C:\") and must stay.
+        if (p[p.len - 2] == ':') break;
+        p = p[0 .. p.len - 1];
+    }
+    return p;
+}
+
+test "trimTrailingSeparators" {
+    const testing = std.testing;
+    try testing.expectEqualStrings(
+        "C:\\Users\\foo",
+        trimTrailingSeparators("C:\\Users\\foo\\"),
+    );
+    try testing.expectEqualStrings(
+        "C:\\Users\\foo",
+        trimTrailingSeparators("C:\\Users\\foo\\\\"),
+    );
+    try testing.expectEqualStrings("C:\\", trimTrailingSeparators("C:\\"));
+    try testing.expectEqualStrings("C:/", trimTrailingSeparators("C:/"));
+    try testing.expectEqualStrings("\\\\?\\C:\\", trimTrailingSeparators("\\\\?\\C:\\"));
+    try testing.expectEqualStrings(
+        "\\\\server\\share",
+        trimTrailingSeparators("\\\\server\\share\\"),
+    );
+    try testing.expectEqualStrings("/", trimTrailingSeparators("/"));
+    try testing.expectEqualStrings("/home/foo", trimTrailingSeparators("/home/foo/"));
+    try testing.expectEqualStrings("relative", trimTrailingSeparators("relative/"));
+    try testing.expectEqualStrings("", trimTrailingSeparators(""));
 }
 
 test "execCommand darwin: shell command" {
