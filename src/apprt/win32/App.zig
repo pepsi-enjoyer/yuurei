@@ -12,6 +12,9 @@ const configpkg = @import("../../config.zig");
 const Config = configpkg.Config;
 const CoreApp = @import("../../App.zig");
 const CoreSurface = @import("../../Surface.zig");
+const font = @import("../../font/main.zig");
+const Pty = @import("../../pty.zig").Pty;
+const perf = @import("../../perf.zig");
 const Surface = @import("Surface.zig");
 const Window = @import("Window.zig");
 const CommandPalette = @import("CommandPalette.zig");
@@ -123,6 +126,21 @@ session_restored: bool = false,
 pending_handoffs: std.ArrayList(defterm.Handoff) = .empty,
 handoff_mutex: std.Io.Mutex = .init,
 
+/// Startup prewarm (see prewarmThreadMain): a background thread that
+/// pre-loads the first window's font grid and pages in the ConPTY
+/// stack while the UI thread does window + WGL init. The font ref is
+/// held for the app's lifetime (released in terminate) so the grid
+/// stays cached across window closes too.
+prewarm_thread: ?std.Thread = null,
+prewarm_font: ?PrewarmFont = null,
+
+const PrewarmFont = struct {
+    config: font.SharedGridSet.DerivedConfig,
+    size: font.face.DesiredSize,
+    /// Set by the prewarm thread on success; read only after join.
+    key: ?font.SharedGridSet.Key = null,
+};
+
 pub fn init(
     self: *App,
     core_app: *CoreApp,
@@ -132,7 +150,7 @@ pub fn init(
 ) !void {
     _ = opts;
 
-    @import("../../perf.zig").mark("app-init-begin");
+    perf.mark("app-init-begin");
 
     const module = winapi.GetModuleHandleW(null) orelse
         return error.GetModuleHandleFailed;
@@ -304,6 +322,31 @@ pub fn init(
         _ = core_app.mailbox.push(global.io(), .{ .new_window = .{} }, .{ .forever = {} });
     }
 
+    // Font-grid prewarm state, built on this thread (a cheap arena
+    // clone) so the background thread never touches the live config.
+    // The DPI is a guess (system DPI, matching a first window on the
+    // primary monitor); a miss just skips the cache, costing nothing.
+    const prewarm_font: ?PrewarmFont = pf: {
+        const scale: f32 =
+            @as(f32, @floatFromInt(winapi.GetDpiForSystem())) / 96.0;
+        const dpi: f32 = scale * font.face.default_dpi;
+        const font_config = font.SharedGridSet.DerivedConfig.init(
+            core_app.alloc,
+            &config,
+        ) catch |err| {
+            log.warn("font prewarm config failed err={}", .{err});
+            break :pf null;
+        };
+        break :pf .{
+            .config = font_config,
+            .size = .{
+                .points = config.@"font-size",
+                .xdpi = @intFromFloat(dpi),
+                .ydpi = @intFromFloat(dpi),
+            },
+        };
+    };
+
     self.* = .{
         .core_app = core_app,
         .config = config,
@@ -311,8 +354,20 @@ pub fn init(
         .thread_id = std.os.windows.GetCurrentThreadId(),
         .flip_capable = flip_capable,
         .com_initialized = com_initialized,
+        .prewarm_font = prewarm_font,
     };
     handoff_app = self;
+
+    // `self` is stable from here (there is one App per process, in
+    // caller-owned memory), so the prewarm thread can hold it.
+    self.prewarm_thread = std.Thread.spawn(
+        .{},
+        prewarmThreadMain,
+        .{self},
+    ) catch |err| thr: {
+        log.warn("prewarm thread spawn failed err={}", .{err});
+        break :thr null;
+    };
 
     // Make sure the loop processes the queued message immediately.
     self.wakeup();
@@ -389,7 +444,61 @@ fn drainHandoffs(self: *App) void {
 /// fails before a surface takes ownership.
 const closeHandoff = defterm.closeHandoff;
 
+/// Background startup prewarm: two independent one-time costs that
+/// otherwise serialize inside the first surface's init.
+///
+///  - The font grid (~100ms cold: DirectWrite discovery + face
+///    loading), overlapped here with window creation + WGL driver
+///    init. The SharedGridSet lock makes the race with the first
+///    surface benign: whoever arrives first builds the grid, the
+///    other blocks briefly and then cache-hits. A wrong DPI guess
+///    (first window on a non-primary-DPI monitor) just misses the
+///    cache and pays the normal serial cost; the unused grid is
+///    released in terminate.
+///
+///  - A throwaway ConPTY (~35ms cold vs ~4ms warm): creating and
+///    closing one pages in conpty.dll, OpenConsole.exe, and console
+///    driver state so the first surface's IO thread finds them warm.
+///    Font first: it is the larger win and the surface's font-grid
+///    ref happens well before its IO thread opens the real pty.
+fn prewarmThreadMain(self: *App) void {
+    if (self.prewarm_font) |*pf| {
+        if (self.core_app.font_grid_set.ref(&pf.config, pf.size)) |r| {
+            pf.key = r[0];
+            perf.mark("prewarm-font-done");
+        } else |err| {
+            log.warn("font prewarm failed err={}", .{err});
+        }
+    }
+
+    var pty = Pty.open(.{
+        .ws_row = 4,
+        .ws_col = 4,
+        .ws_xpixel = 8,
+        .ws_ypixel = 8,
+    }) catch |err| {
+        log.warn("conpty prewarm failed err={}", .{err});
+        return;
+    };
+    pty.deinit();
+    perf.mark("prewarm-conpty-done");
+}
+
 pub fn terminate(self: *App) void {
+    // Prewarm teardown before anything it touches: join the thread,
+    // then release the font-grid ref it may hold. (The grid set lives
+    // on the core app and its deref takes the set's own lock, so this
+    // is safe alongside surface teardown below.)
+    if (self.prewarm_thread) |t| {
+        t.join();
+        self.prewarm_thread = null;
+    }
+    if (self.prewarm_font) |*pf| {
+        if (pf.key) |key| self.core_app.font_grid_set.deref(key);
+        pf.config.deinit();
+        self.prewarm_font = null;
+    }
+
     // Stop accepting default-terminal handoffs FIRST — revoke the COM
     // class object and detach the hooks — and only then release anything
     // still queued. The reverse order would leave a window where a newly

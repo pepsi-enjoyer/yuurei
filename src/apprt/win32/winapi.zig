@@ -425,6 +425,7 @@ pub extern "gdi32" fn EnumFontFamiliesExW(
 ) callconv(.winapi) i32;
 pub extern "user32" fn SetWindowTextW(HWND, [*:0]const u16) callconv(.winapi) BOOL;
 pub extern "user32" fn GetDpiForWindow(HWND) callconv(.winapi) UINT;
+pub extern "user32" fn GetDpiForSystem() callconv(.winapi) UINT;
 pub extern "user32" fn WindowFromDC(HDC) callconv(.winapi) ?HWND;
 pub extern "user32" fn GetCursorPos(*POINT) callconv(.winapi) BOOL;
 pub extern "user32" fn ScreenToClient(HWND, *POINT) callconv(.winapi) BOOL;
