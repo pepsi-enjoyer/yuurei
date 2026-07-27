@@ -29,9 +29,18 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
 
+      # -Dcpu pins a portable ISA baseline. Without it Zig targets the CI
+      # runner's native CPU, and windows-latest runners often have AVX-512;
+      # the resulting binary dies with STATUS_ILLEGAL_INSTRUCTION on any
+      # CPU without it (v0.2.10 was unrunnable on Zen 3). x86_64_v2 keeps
+      # the zip runnable on ~15 years of x64; SIMD hot paths dispatch at
+      # runtime so newer CPUs lose nothing.
       - name: Build (ReleaseFast)
-        run: zig build -Doptimize=ReleaseFast
+        run: zig build -Doptimize=ReleaseFast -Dcpu=x86_64_v2
 
+      # Runs on the same machine that built the binary, so it can NOT
+      # catch ISA-baseline regressions like the above — only gross
+      # packaging/startup breakage.
       - name: Smoke test
         run: zig-out\bin\ghostty.exe +version
 
