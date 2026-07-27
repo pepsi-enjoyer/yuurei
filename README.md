@@ -38,7 +38,8 @@ Everything below works today, verified live on Windows 11.
 - **Shell profiles** (Windows Terminal-style): auto-detected shells (cmd,
   PowerShell, pwsh, Nushell, Git Bash) and WSL distros, plus user
   config-overlay profiles, from a split new-tab button, the command palette,
-  `ctrl+shift+1..9`, or the tab context menu.
+  `ctrl+shift+1..9`, or the tab context menu — see
+  [`docs/PROFILES.md`](docs/PROFILES.md).
 - **Session restore** (`windows-restore-session`): reopen your tabs — profile,
   working directory, title — on the next launch.
 - Splits: directional create, spatial focus, drag-resize, equalize, zoom.
@@ -128,6 +129,15 @@ The zip bundles `conpty.dll` and `OpenConsole.exe`
 ([microsoft/terminal](https://github.com/microsoft/terminal), MIT — see
 `THIRD_PARTY_NOTICES.md`): a newer pseudoconsole, measurably faster on output
 bursts. Delete them and yuurei falls back to the in-box ConPTY.
+
+## Configuring
+
+The standard Ghostty configuration applies, from
+`%LOCALAPPDATA%\ghostty\config`. [`docs/CONFIG.md`](docs/CONFIG.md) covers
+the Windows specifics — file locations, the settings window, and this fork's
+`windows-*` options — and [`docs/PROFILES.md`](docs/PROFILES.md) covers shell
+profiles. The full core option reference is
+[ghostty.org/docs/config](https://ghostty.org/docs/config).
 
 ## Building
 
