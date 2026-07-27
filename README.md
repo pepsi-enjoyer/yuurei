@@ -17,8 +17,9 @@ same core as upstream Ghostty. This fork adds only the Windows platform layer
 ConPTY plumbing — and tracks upstream `main` so core improvements land here by
 construction.
 
-Design notes, audits, and progress checklists live in
-[`WINDOWS_PORT_PLAN.md`](WINDOWS_PORT_PLAN.md).
+What's planned next lives in [`docs/ROADMAP.md`](docs/ROADMAP.md); the
+original port plan and its engineering log (audits, incidents, the latency
+saga) are archived in [`WINDOWS_PORT_PLAN.md`](WINDOWS_PORT_PLAN.md).
 
 ## Features
 
@@ -73,10 +74,11 @@ Everything below works today, verified live on Windows 11.
 - Native toast notifications, taskbar progress (OSC 9;4), background opacity
   and blur, mouse-hide-while-typing.
 
-**In progress / not yet done:** default-terminal handoff (the registration and
-COM proxy are in place; the handoff server is next), UIA accessibility,
-per-pixel transparency, auto-update, packaging / code-signing / winget, and
-ARM64. See [`WINDOWS_PORT_PLAN.md`](WINDOWS_PORT_PLAN.md) for the live list.
+**In progress / not yet done:** default-terminal handoff (functionally
+complete and verified live, shipped gated off pending a soak test), UIA
+accessibility, per-pixel transparency, auto-update, packaging /
+code-signing / winget (non-goals by choice), and ARM64. See
+[`docs/ROADMAP.md`](docs/ROADMAP.md) for the live list.
 
 ## What's shared, and what's new here
 
@@ -102,9 +104,6 @@ tree behind Windows splits.
   GL host per tab (`Surface.zig`), profiles, session restore, the flip-model
   present path (`dxgi.zig`), and the GDI-painted UI surfaces (command palette,
   settings, inspector, scrollbar, search bar).
-- [`vendor/libxev/`](vendor/libxev/) — **vendored libxev with the IOCP
-  lost-wakeup fix** (`AsyncIOCP` heap-allocates its notify state), the fix
-  behind the typing-latency win.
 - [`vendor/conpty/`](vendor/conpty/) — vendored `conpty.dll` +
   `OpenConsole.exe` from [microsoft/terminal](https://github.com/microsoft/terminal)
   (MIT), installed beside the exe.

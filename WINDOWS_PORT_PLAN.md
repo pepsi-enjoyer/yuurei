@@ -6,10 +6,49 @@ staging branch was fast-forwarded into `main` when the project became a
 standalone fork — upstream is tracked via the `upstream` remote and
 merged in by release tag)*
 **Date:** 2026-06-11
-**Status:** Plan v2.1 — supersedes the standalone `yurei` attempt; updated same
-day with the findings of the in-tree audit (§4a), which moved Phase 0 to
-"mostly done upstream" and replaced Phase 2's GLFW vehicle (deleted upstream
-July 2025) with a minimal win32 apprt skeleton.
+**Status:** **HISTORICAL (archived 2026-07-27).** The plan was executed;
+see §0 below. Kept as the engineering log of the port — the audits,
+incident reports, measurements, and dead ends recorded here are the "why"
+behind decisions the code alone can't explain. **The live roadmap is
+[`docs/ROADMAP.md`](docs/ROADMAP.md).**
+
+---
+
+## 0. Outcome (2026-07-27 retrospective)
+
+The port shipped. Everything phases 0–5 scoped — and a good deal the plan
+called post-v1 — is on `main` and released (v0.1.0 → v0.2.12, portable
+zips on GitHub Releases): tabs, splits, custom Mica frame, IME, profiles,
+session restore, quick terminal, command palette, settings window,
+inspector, search, session-wide perf work (17 ms median key-to-photon),
+and shell integration for pwsh + Nushell. The fork has since crossed the
+Zig 0.16 boundary and tracks upstream by merge.
+
+A few decisions recorded below changed in practice; the text is kept
+as-written, so read with these corrections:
+
+- **§3 Win32 bindings:** zigwin32 was never adopted. Everything —
+  including COM vtables (DXGI, DirectComposition, ITaskbarList,
+  ITerminalHandoff) — is hand-written in `winapi.zig`/`dxgi.zig`/
+  `defterm.zig`. The "COM is not hand-writable at sustainable quality"
+  premise turned out to be wrong for the fork's narrow surface.
+- **§3/§8 Distribution:** "signed, winget-installable" was dropped by
+  choice (2026-06-12): GitHub Releases only, unsigned, no installer.
+  Milestone M4 is superseded, not pending.
+- **§5 Upstream tracking:** "weekly rebases" became **merges** of
+  upstream (public history stays stable); cadence is per upstream sync,
+  not weekly.
+- **Phase 5 libxev vendoring:** the vendored libxev (IOCP lost-wakeup
+  fix) was retired at the Zig 0.16 upgrade (2026-07-25) — upstream
+  libxev's 0.16-era rewrite no longer has the bug (re-benchmarked:
+  17.4 ms median, no regression). The dependency is upstream's package
+  again; `vendor/libxev/` is gone.
+- **Toolchain:** Zig 0.15.2 → **0.16.0** (2026-07-25 upgrade, ~13k
+  lines of win32 apprt migrated).
+- **Phase 4 "default-terminal registration" (listed as post-v1):** built
+  after all — functionally complete (ConptyPackPseudoConsole adoption,
+  COM server, resize + exit detection verified live) but shipped gated
+  off pending a soak test. See the roadmap.
 
 ---
 
