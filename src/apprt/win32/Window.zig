@@ -313,6 +313,7 @@ fn quickTerminalGeometry(app: *App) struct { x: i32, y: i32, w: i32, h: i32 } {
 
 /// Create a window with one tab, show it, and return it.
 pub fn create(alloc: Allocator, app: *App, opts: CreateOptions) !*Window {
+    perf.mark("window-create-begin");
     const self = try alloc.create(Window);
     errdefer alloc.destroy(self);
 
@@ -490,6 +491,7 @@ pub fn newTabWithProfile(
 }
 
 pub fn newTabWithOpts(self: *Window, opts: SpawnOpts) !*Surface {
+    perf.mark("new-tab-begin");
     const alloc = self.app.core_app.alloc;
     var tree = try self.newSurfaceTree(opts);
     errdefer tree.deinit();
@@ -506,6 +508,7 @@ pub fn newTabWithOpts(self: *Window, opts: SpawnOpts) !*Surface {
     }
 
     self.activateTab(self.tabs.items.len - 1);
+    perf.mark("new-tab-end");
     return surface;
 }
 

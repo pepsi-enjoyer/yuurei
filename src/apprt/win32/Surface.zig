@@ -20,6 +20,7 @@ const profiles = @import("profiles.zig");
 const Scrollbar = @import("Scrollbar.zig");
 const defterm = @import("defterm.zig");
 const winapi = @import("winapi.zig");
+const perf = @import("../../perf.zig");
 pub const dxgi = @import("dxgi.zig");
 
 const log = std.log.scoped(.win32);
@@ -126,6 +127,8 @@ pub fn init(
     window: *Window,
     spawn_opts: Window.SpawnOpts,
 ) !void {
+    perf.mark("surface-init-begin");
+
     // Own any default-terminal handoff until it is stored in `self`
     // below. The failure points before that — host window, DC, pixel
     // format, GL context — would otherwise strand the handed-off pipes
@@ -198,6 +201,7 @@ pub fn init(
     const gl_context = winapi.wglCreateContext(hdc) orelse
         return error.CreateGLContextFailed;
     errdefer _ = winapi.wglDeleteContext(gl_context);
+    perf.mark("gl-context-done");
 
     self.* = .{
         .app = app,
@@ -253,6 +257,7 @@ pub fn init(
     else
         null;
     defer if (profile_base) |*c| c.deinit();
+    perf.mark("spawn-config-done");
 
     if (spawn_opts.profile) |p| {
         self.profile_name = app.core_app.alloc.dupeZ(u8, p.name) catch null;
@@ -285,6 +290,7 @@ pub fn init(
         self,
     );
     errdefer self.core_surface.deinit();
+    perf.mark("surface-init-end");
 }
 
 pub fn deinit(self: *Self) void {

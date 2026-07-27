@@ -76,6 +76,28 @@ pub fn sinceKeyMs() ?i64 {
     return ms;
 }
 
+/// Startup/spawn phase tracing: logs "mark <name> t=+<ms>" relative to
+/// the first mark of the process. Threads race only on the very first
+/// mark (cmpxchg picks one epoch); all marks share that epoch so
+/// cross-thread ordering reads directly off the timestamps.
+var mark_epoch_ns: std.atomic.Value(i64) = .init(0);
+
+pub fn mark(name: []const u8) void {
+    if (!isEnabled()) return;
+    const now: i64 = @intCast(std.Io.Timestamp.now(global.io(), .awake).toNanoseconds());
+    var epoch = mark_epoch_ns.load(.monotonic);
+    if (epoch == 0) {
+        epoch = if (mark_epoch_ns.cmpxchgStrong(0, now, .monotonic, .monotonic)) |actual|
+            actual
+        else
+            now;
+    }
+    std.log.scoped(.perf).info("mark {s} t=+{d}ms", .{
+        name,
+        @divTrunc(now - epoch, std.time.ns_per_ms),
+    });
+}
+
 /// Consume the pending key press and return the elapsed time to now,
 /// if a press was pending and its echo has arrived from the pty.
 pub fn keyToPresent() ?u64 {

@@ -102,6 +102,8 @@ pub fn threadEnter(
     io: *termio.Termio,
     td: *termio.Termio.ThreadData,
 ) !void {
+    perf.mark("io-thread-enter");
+
     // Start our subprocess
     const pty_fds = self.subprocess.start(alloc) catch |err| {
         // If we specifically got this error then we are in the forked
@@ -1031,12 +1033,14 @@ const Subprocess = struct {
         var in_child: bool = false;
 
         // Create our pty
+        perf.mark("pty-open-begin");
         var pty = try Pty.open(.{
             .ws_row = @intCast(self.grid_size.rows),
             .ws_col = @intCast(self.grid_size.columns),
             .ws_xpixel = @intCast(self.screen_size.width),
             .ws_ypixel = @intCast(self.screen_size.height),
         });
+        perf.mark("pty-open-end");
         self.pty = pty;
         errdefer if (!in_child) {
             if (comptime builtin.os.tag != .windows) {
@@ -1203,6 +1207,7 @@ const Subprocess = struct {
             log.warn("error killing command during cleanup err={}", .{err});
         };
         log.info("started subcommand path={s} pid={?}", .{ self.args[0], cmd.pid });
+        perf.mark("shell-spawned");
 
         self.process = .{ .fork_exec = cmd };
         return switch (builtin.os.tag) {
@@ -1946,6 +1951,7 @@ pub const ReadThread = struct {
         var stat_chunks: u64 = 0;
         var stat_parse_ns: u64 = 0;
 
+        var first_output = true;
         while (true) {
             while (true) {
                 var n: windows.DWORD = 0;
@@ -1983,6 +1989,11 @@ pub const ReadThread = struct {
                             unreachable;
                         },
                     }
+                }
+
+                if (first_output and n > 0) {
+                    first_output = false;
+                    perf.mark("first-pty-output");
                 }
 
                 if (tracing) {

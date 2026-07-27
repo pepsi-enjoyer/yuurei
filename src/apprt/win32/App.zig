@@ -132,6 +132,8 @@ pub fn init(
 ) !void {
     _ = opts;
 
+    @import("../../perf.zig").mark("app-init-begin");
+
     const module = winapi.GetModuleHandleW(null) orelse
         return error.GetModuleHandleFailed;
     const hinstance: winapi.HINSTANCE = @ptrCast(module);
