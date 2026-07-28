@@ -46,8 +46,9 @@ terminal: terminalpkg.Terminal,
 renderer_state: *renderer.State,
 
 /// A handle to wake up the renderer. This hints to the renderer that
-/// a repaint should happen.
-renderer_wakeup: xev.Async,
+/// a repaint should happen. A pointer into the renderer thread (see
+/// termio.Options.renderer_wakeup for why this must not be a copy).
+renderer_wakeup: *xev.Async,
 
 /// The mailbox for notifying the renderer of things.
 renderer_mailbox: *renderer.Thread.Mailbox,
@@ -499,8 +500,14 @@ pub fn resize(
         }
     }
 
-    // Mail the renderer so that it can update the GPU and re-render
-    _ = self.renderer_mailbox.push(global.io(), .{ .resize = size }, .{ .forever = {} });
+    // Mail the renderer so that it can update the GPU and re-render.
+    // Wake the renderer before any blocking push: a full mailbox only
+    // drains once the renderer wakes, so pushing first can park us
+    // behind a sleeping renderer.
+    if (self.renderer_mailbox.push(global.io(), .{ .resize = size }, .{ .instant = {} }) == 0) {
+        self.renderer_wakeup.notify() catch {};
+        _ = self.renderer_mailbox.push(global.io(), .{ .resize = size }, .{ .forever = {} });
+    }
     self.renderer_wakeup.notify() catch {};
 }
 

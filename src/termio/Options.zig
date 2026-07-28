@@ -32,7 +32,14 @@ renderer_state: *renderer.State,
 
 /// A handle to wake up the renderer. This hints to the renderer that
 /// a repaint should happen.
-renderer_wakeup: xev.Async,
+///
+/// This is a pointer to the renderer thread's own Async, never a
+/// by-value copy: libxev's Windows AsyncIOCP keeps its notify state
+/// (wakeup latch, registered waiter) inline in the struct, so a copy
+/// taken before the renderer thread calls wait() forks that state and
+/// every notify() through the copy is silently lost. The fd/mach-port
+/// backends tolerate copies only because they share a kernel object.
+renderer_wakeup: *xev.Async,
 
 /// The mailbox for renderer messages.
 renderer_mailbox: *renderer.Thread.Mailbox,
