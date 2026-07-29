@@ -92,24 +92,34 @@ pub fn encode(
 ) std.Io.Writer.Error!void {
     //std.log.warn("KEYENCODER event={} opts={}", .{ event, opts });
 
-    // ConPTY win32-input-mode wins over everything else: conhost itself
-    // requested it (mode 9001) and the kitty protocol cannot legitimately
-    // be active behind ConPTY (conhost consumes the app's negotiation).
+    // The kitty keyboard protocol wins over ConPTY win32-input-mode.
+    //
+    // ConPTY negotiates both: conhost requests win32-input-mode (mode
+    // 9001) and, if we advertise support, enables the kitty protocol on
+    // our end too. Applications behind ConPTY then choose: those that
+    // read VT input (Copilot CLI, Claude Code) keep the kitty flags set,
+    // while those that read Win32 INPUT_RECORDs through the console API
+    // (Rust/crossterm TUIs like Codex) explicitly disable them with
+    // `CSI = 0 ; 1 u`. The kitty flags are therefore the only reliable
+    // signal for which encoding the application can actually decode.
+    //
+    // This matters because ConPTY collapses modifier state that a key
+    // record cannot carry in its code unit: Shift+Enter arrives as a
+    // bare CR and Ctrl+Backspace as a bare BS, so VT-reading apps see
+    // them as plain Enter and Backspace.
+    if (opts.kitty_flags.int() != 0) return try kitty(
+        writer,
+        event,
+        opts,
+    );
+
     if (opts.win32_input_mode) return try win32InputMode(
         writer,
         event,
         opts,
     );
 
-    return if (opts.kitty_flags.int() != 0) try kitty(
-        writer,
-        event,
-        opts,
-    ) else try legacy(
-        writer,
-        event,
-        opts,
-    );
+    return try legacy(writer, event, opts);
 }
 
 /// Perform Kitty keyboard protocol encoding of the key event.
@@ -334,10 +344,11 @@ fn kitty(
 
 /// Perform ConPTY win32-input-mode encoding of the key event.
 ///
-/// While DEC mode 9001 is set (requested by conhost at session start),
-/// every key event is sent as `CSI Vk;Sc;Uc;Kd;Cs;Rc _` so conhost can
-/// reconstruct complete Win32 INPUT_RECORDs -- including modifier state
-/// and key releases -- for console API clients such as crossterm TUIs.
+/// While DEC mode 9001 is set (requested by conhost at session start)
+/// and the kitty keyboard protocol is not active, every key event is
+/// sent as `CSI Vk;Sc;Uc;Kd;Cs;Rc _` so conhost can reconstruct complete
+/// Win32 INPUT_RECORDs -- including modifier state and key releases --
+/// for console API clients such as crossterm TUIs.
 /// Reference: microsoft/terminal doc/specs/#4999 (improved keyboard
 /// handling in ConPTY).
 fn win32InputMode(
@@ -2550,7 +2561,10 @@ test "win32: right-side modifiers use right control key state bits" {
     try testing.expectEqualStrings("\x1b[13;28;13;1;5;1_", writer.buffered());
 }
 
-test "win32: takes precedence over kitty flags in encode" {
+test "win32: kitty flags take precedence over win32 input mode" {
+    // Applications behind ConPTY that read VT input keep the kitty flags
+    // enabled; they must receive CSI u so modifiers survive. See the
+    // comment in `encode`.
     var buf: [128]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buf);
     try encode(&writer, .{
@@ -2562,7 +2576,80 @@ test "win32: takes precedence over kitty flags in encode" {
         .win32_input_mode = true,
         .kitty_flags = .{ .disambiguate = true },
     });
+    try testing.expectEqualStrings("\x1b[13;2u", writer.buffered());
+}
+
+test "win32: ctrl+backspace uses kitty when flags are set" {
+    var buf: [128]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    try encode(&writer, .{
+        .key = .backspace,
+        .mods = .{ .ctrl = true },
+        .windows_vk = 0x08,
+        .windows_scancode = 0x0E,
+    }, .{
+        .win32_input_mode = true,
+        .kitty_flags = .{ .disambiguate = true },
+    });
+    try testing.expectEqualStrings("\x1b[127;5u", writer.buffered());
+}
+
+test "win32: win32 input mode is used when kitty is disabled" {
+    // Console API clients (crossterm TUIs) disable the kitty protocol,
+    // so they keep receiving full-fidelity key records.
+    var buf: [128]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    try encode(&writer, .{
+        .key = .enter,
+        .mods = .{ .shift = true },
+        .windows_vk = 0x0D,
+        .windows_scancode = 0x1C,
+    }, .{
+        .win32_input_mode = true,
+        .kitty_flags = .disabled,
+    });
     try testing.expectEqualStrings("\x1b[13;28;13;1;16;1_", writer.buffered());
+}
+
+test "win32: conpty negotiation decides the encoding per application" {
+    // Terminal state driven exactly as observed from real CLIs behind
+    // ConPTY: conhost requests win32-input-mode, then the application
+    // either keeps the kitty flags enabled (Copilot CLI via
+    // `CSI = 1 ; 1 u`, Claude Code via `CSI > 1 u`) or disables them
+    // (Codex via `CSI = 0 ; 1 u`).
+    const alloc = testing.allocator;
+    const shift_enter: key.KeyEvent = .{
+        .key = .enter,
+        .mods = .{ .shift = true },
+        .windows_vk = 0x0D,
+        .windows_scancode = 0x1C,
+    };
+
+    // Reads VT input: kitty stays enabled, so it must get CSI u.
+    {
+        var t = try Terminal.init(testing.io, alloc, .{ .cols = 10, .rows = 5 });
+        defer t.deinit(alloc);
+        t.modes.set(.win32_input, true);
+        t.screens.active.kitty_keyboard.set(.set, .{ .disambiguate = true });
+
+        var buf: [128]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(&buf);
+        try encode(&writer, shift_enter, .fromTerminal(&t));
+        try testing.expectEqualStrings("\x1b[13;2u", writer.buffered());
+    }
+
+    // Reads INPUT_RECORDs: kitty disabled, so it keeps key records.
+    {
+        var t = try Terminal.init(testing.io, alloc, .{ .cols = 10, .rows = 5 });
+        defer t.deinit(alloc);
+        t.modes.set(.win32_input, true);
+        t.screens.active.kitty_keyboard.set(.set, .disabled);
+
+        var buf: [128]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(&buf);
+        try encode(&writer, shift_enter, .fromTerminal(&t));
+        try testing.expectEqualStrings("\x1b[13;28;13;1;16;1_", writer.buffered());
+    }
 }
 
 test "win32: bare modifier press encodes with zero code unit" {

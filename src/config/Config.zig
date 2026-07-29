@@ -2068,9 +2068,16 @@ keybind: Keybinds = .{},
 /// as full-fidelity Win32 key records (`CSI Vk;Sc;Uc;Kd;Cs;Rc _`) so
 /// console applications that read INPUT_RECORDs — e.g. Rust/crossterm
 /// TUIs like the Codex CLI — receive real modifier state such as
-/// Shift+Enter. Requires a ConPTY new enough to translate key records
-/// to the kitty keyboard protocol (bundled) for VT-reading applications
-/// to keep full key fidelity as well.
+/// Shift+Enter.
+///
+/// Key records are only used while the kitty keyboard protocol is
+/// inactive. Applications behind ConPTY that read VT input (such as the
+/// Copilot CLI and Claude Code) keep the kitty flags enabled and are
+/// encoded with the kitty protocol instead, because ConPTY drops the
+/// modifier state that a key record cannot carry in its code unit
+/// (Shift+Enter would otherwise arrive as a bare CR, and Ctrl+Backspace
+/// as a bare BS). Applications that read INPUT_RECORDs disable the
+/// kitty flags, so they keep receiving key records.
 ///
 /// Set to false to refuse the request and keep legacy VT key encoding.
 ///

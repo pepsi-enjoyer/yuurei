@@ -74,7 +74,7 @@ Windows-specific behavior worth knowing):
 | `windows-titlebar-thin` | `false` | Compact 26 px (logical) tab strip, wezterm-style, with compact caption buttons. Skips the Mica backdrop (DWM's native caption buttons need the full-height strip). Live-reloadable. |
 | `windows-restore-session` | `false` | Save open tabs (profile, working directory, manual title) when a window closes or the app quits, and reopen them on the next launch. Splits are not yet recorded — a tab restores as its focused pane. |
 | `windows-flip-model` | `false` | Present through a DXGI flip-model swapchain on DirectComposition (the Windows Terminal presentation path) instead of classic SwapBuffers. Classic measures better for typing latency, which is why it's the default; flip can be promoted to hardware overlays and is the base for future per-pixel transparency. New terminals only. |
-| `win32-input-mode` | `true` | Honor ConPTY's win32-input-mode request so console apps that read `INPUT_RECORD`s (many Rust/crossterm TUIs) get full modifier fidelity — e.g. Shift+Enter. Set to `false` for legacy VT-only key encoding. New terminals only. |
+| `win32-input-mode` | `true` | Honor ConPTY's win32-input-mode request so console apps that read `INPUT_RECORD`s (many Rust/crossterm TUIs) get full modifier fidelity — e.g. Shift+Enter. Apps that keep the kitty keyboard protocol enabled (Copilot CLI, Claude Code) are encoded with kitty instead, so Shift+Enter and Ctrl+Backspace survive. Set to `false` for legacy VT-only key encoding. New terminals only. |
 | `window-vsync` | `true` | On Windows this controls the WGL swap interval and only applies when `windows-flip-model` is enabled. |
 
 ## Shells and integration
